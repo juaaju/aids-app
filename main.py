@@ -4,21 +4,17 @@ import numpy as np
 from ultralytics import YOLO
 from threading import Thread
 import time
-from gtts import gTTS
-from playsound import playsound
 import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
-import asyncio
-from bleak import BleakClient
 import shutil
-import ble_utils
 
 # BLE device and characteristic details
 ESP32_ADDRESS = "A0:A3:B3:2A:D8:22"  # MAC address of your ESP32
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
+frame_processed = 0
 is_target = 'OFF'
 
 # CamStream class for video stream handling
@@ -60,7 +56,7 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
-async def predict(model, img, frame_count, client, conf=0.5):
+def predict(model, img, frame_count, conf=0.5):
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
         return img
@@ -78,15 +74,14 @@ async def predict(model, img, frame_count, client, conf=0.5):
             cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
                         cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
             write_to_excel(name, img, current_time, frame_count)
-            await is_target_object(name, client)
+            is_target_object(name)
 
     return img
 
-async def is_target_object(name, client):
+def is_target_object(name):
     global is_target
     if name in ['nohandrailmidleft', 'nohandrailleftfar', 'nohandrailmidright', 'nohandrailrightfar', 'nohandrailupleft', 'nohandraillowright']:
         is_target = '1'
-    await ble_send(CHARACTERISTIC_UUID, is_target, client)
 
 async def ble_send(characteristic_uuid, command, ble_client=None):
     await ble_client.write_gatt_char(characteristic_uuid, command.encode())
@@ -111,34 +106,36 @@ def adjust_dimensions(ws):
         for cell in row:
             ws.row_dimensions[cell.row].height = 300
 
-def sound_notification(text):
-    tts = gTTS(text, lang='id', slow=False)
-    tts.save('speech.mp3')
-    playsound('speech.mp3')
+def export_data():
+    wb.save('handrail.xlsx')
+    shutil.rmtree(image_folder)
+    print("Data exported successfully")
 
-async def main(model, frame_processed):
-    async with BleakClient(ESP32_ADDRESS) as client:
-        try:
-            while True:
-                if cam_stream.stopped:
-                    break
-                frame = cam_stream.read()
-                frame = cv2.resize(frame, (416, 416))
-                frame = predict(model, frame, frame_processed, client)
-                frame_processed += 1
-                cv2.imshow('cctv', frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        finally:
-            cam_stream.stop()
-            cv2.destroyAllWindows()
-            wb.save('handrail.xlsx')
-            shutil.rmtree(image_folder)
+def save_frame(frame, frame_count):
+    img_filename = f"frames/latest_frame.png"
+    cv2.imwrite(img_filename, frame)
+
+def main(model):
+    global frame_processed
+    while True:
+        if cam_stream.stopped:
+            break
+        frame = cam_stream.read()
+        frame = cv2.resize(frame, (416, 416))
+        frame = predict(model, frame, frame_processed)
+        frame_processed += 1
+        save_frame(frame, frame_processed)
+        cv2.imshow('cctv', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    cam_stream.stop()
+    cv2.destroyAllWindows()
 
 
 # Initialization
 model = YOLO('yolov8nbest.pt')
-cam_stream = CamStream("00000000815000000.mp4")
+cam_stream = CamStream(0)
 cam_stream.start()
 
 wb = Workbook()
@@ -148,9 +145,7 @@ image_folder = "temp_images"
 if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
-frame_processed = 0
-
 if __name__ == "__main__":
-    asyncio.run(main(model, frame_processed))
+    main(model)
 
 # ble_client = asyncio.run(ble_utils.connect(ESP32_ADDRESS))
