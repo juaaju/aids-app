@@ -8,6 +8,8 @@ from openpyxl import Workbook
 import shutil
 from flet import *
 import base64
+import serial
+import numpy as np
 
 # CamStream class for video stream handling
 class CamStream:
@@ -49,6 +51,9 @@ class CamStream:
         self.stopped = True
 
 def predict(model, img, frame_count, conf=0.5):
+    global ser
+    global ref_image
+    crop_img  = img.copy()
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
         return img
@@ -59,15 +64,40 @@ def predict(model, img, frame_count, conf=0.5):
         for i in range(count):
             cls = int(result.boxes.cls[i].item())
             name = result.names[cls]
-            confidence = float(result.boxes.conf[i].item())
-            bbox = result.boxes.xywh[i].cpu().numpy()
-            x, y, w, h = bbox
-            cv2.rectangle(img, (int(x - w/2), int(y - h/2)), (int(x + w/2), int(y + h/2)), (255, 0, 255), 1)
-            cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
-                        cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
-            write_to_excel(name, img, current_time, frame_count)
+            if name == 'person':
+                confidence = float(result.boxes.conf[i].item())
+                bbox = result.boxes.xywh[i].cpu().numpy()
+                x, y, w, h = bbox
+                cv2.rectangle(img, (int(x - w/2), int(y - h/2)), (int(x + w/2), int(y + h/2)), (255, 0, 255), 1)
+                cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
+                            cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
+                pts1 = np.array([[255, 234], [260, 234], [307, 130], [302, 131]])
+                pts2 = np.array([[311, 113], [404, 91], [404, 95], [311, 117]])
+                crop_img = crop(crop_img, pts1, pts2)
+                cv2.imwrite('test1.png', crop_img[int(y - h/2):int(y + h/2),int(x - w/2):int(x + w/2)])
+                cv2.imwrite('test2.png', ref_image[int(y - h/2):int(y + h/2),int(x - w/2):int(x + w/2)])
+                if calculate_pixel(crop_img[int(y - h/2):int(y + h/2), int(x - w/2):int(x + w/2)]) > calculate_pixel(ref_image[int(y - h/2):int(y + h/2), int(x - w/2):int(x + w/2)]):
+                    ser.write(('on\n').encode('utf-8'))  # Send data
+                write_to_excel(name, img, current_time, frame_count)
 
     return img
+
+def crop(frame, pts1, pts2):
+
+    # Create a mask of the same size as the image, initialized with zeros (black)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+   # Fill the two polygons on the mask with white (255)
+    cv2.fillPoly(mask, [pts1], 255)
+    cv2.fillPoly(mask, [pts2], 255)
+
+    # Apply the mask to the image
+    masked_image = cv2.bitwise_and(frame, frame, mask=mask)
+
+    return masked_image
+
+def calculate_pixel(frame):
+    return np.std(frame)
 
 def write_to_excel(data, img, current_time, frame_count):
     img_filename = f"{image_folder}/frame_image_{frame_count}.png"
@@ -199,11 +229,15 @@ def main(page: Page):
         is_running = not is_running
 
     def feedback_test(e):
-        page.dialog = page.connect_success
-        page.dialog.open = True
-        indicator.bgcolor = colors.GREEN  # Change indicator color to green
-        indicator.update()
-        page.update()
+        ser.write(('on\n').encode('utf-8'))  # Send data
+        response = ser.readline().decode('utf-8').strip()
+        if(response):    
+            page.dialog = page.connect_success
+            page.dialog.open = True
+            indicator.bgcolor = colors.GREEN  # Change indicator color to green
+            indicator.update()
+            page.update()
+        e
 
     def login(e):
         if username.value == 'admin' and password.value == '123poleng':
@@ -325,11 +359,13 @@ def main(page: Page):
         )
     )
 
+global send_signal
+send_signal = False
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
 
 model = YOLO('yolov8n.pt')
-cam_stream = CamStream('test.mp4')
+cam_stream = CamStream(video_path)
 cam_stream.start()
 
 wb = Workbook()
@@ -338,6 +374,11 @@ ws = wb.active
 image_folder = "temp_images"
 if not os.path.exists(image_folder):
     os.makedirs(image_folder)
+
+# Set up the serial connection
+ser = serial.Serial('COM6', 115200, timeout=1)
+
+ref_image = cv2.imread('clean_handrail.jpg')
 
 if __name__ == "__main__":
     app(main)

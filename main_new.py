@@ -8,11 +8,7 @@ import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
 import shutil
-
-# BLE device and characteristic details
-ESP32_ADDRESS = "A0:A3:B3:2A:D8:22"  # MAC address of your ESP32
-SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+import serial
 
 frame_processed = 0
 is_target = 'OFF'
@@ -57,6 +53,9 @@ class CamStream:
         self.stopped = True
 
 def predict(model, img, frame_count, conf=0.5):
+    global ref_image
+    global ser
+    crop_img  = img.copy()
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
         return img
@@ -67,24 +66,40 @@ def predict(model, img, frame_count, conf=0.5):
         for i in range(count):
             cls = int(result.boxes.cls[i].item())
             name = result.names[cls]
-            confidence = float(result.boxes.conf[i].item())
-            # bbox = result.boxes.xywh[i].cpu().numpy()
-            # x, y, w, h = bbox
-            # cv2.rectangle(img, (int(x - w/2), int(y - h/2)), (int(x + w/2), int(y + h/2)), (255, 0, 255), 1)
-            # cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
-            #             cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
-            write_to_excel(name, img, current_time, frame_count)
-            is_target_object(name)
+            if name == 'person':
+                confidence = float(result.boxes.conf[i].item())
+                bbox = result.boxes.xywh[i].cpu().numpy()
+                x, y, w, h = bbox
+                cv2.rectangle(img, (int(x - w/2), int(y - h/2)), (int(x + w/2), int(y + h/2)), (255, 0, 255), 1)
+                cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
+                            cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
+                pts1 = np.array([[255, 234], [260, 234], [307, 130], [302, 131]])
+                pts2 = np.array([[311, 113], [404, 91], [404, 95], [311, 117]])
+                crop_img = crop(crop_img, pts1, pts2)
+                cv2.imwrite('test1.png', crop_img[int(y - h/2):int(y + h/2),int(x - w/2):int(x + w/2)])
+                cv2.imwrite('test2.png', ref_image[int(y - h/2):int(y + h/2),int(x - w/2):int(x + w/2)])
+                if calculate_pixel(crop_img[int(y - h/2):int(y + h/2), int(x - w/2):int(x + w/2)]) > calculate_pixel(ref_image[int(y - h/2):int(y + h/2), int(x - w/2):int(x + w/2)]):
+                    ser.write(('on\n').encode('utf-8'))  # Send data
+                write_to_excel(name, img, current_time, frame_count)
 
     return img
 
-def is_target_object(name):
-    global is_target
-    if name in ['nohandrailmidleft', 'nohandrailleftfar', 'nohandrailmidright', 'nohandrailrightfar', 'nohandrailupleft', 'nohandraillowright']:
-        is_target = '1'
+def crop(frame, pts1, pts2):
 
-async def ble_send(characteristic_uuid, command, ble_client=None):
-    await ble_client.write_gatt_char(characteristic_uuid, command.encode())
+    # Create a mask of the same size as the image, initialized with zeros (black)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+   # Fill the two polygons on the mask with white (255)
+    cv2.fillPoly(mask, [pts1], 255)
+    cv2.fillPoly(mask, [pts2], 255)
+
+    # Apply the mask to the image
+    masked_image = cv2.bitwise_and(frame, frame, mask=mask)
+
+    return masked_image
+
+def calculate_pixel(frame):
+    return np.std(frame)
 
 def write_to_excel(data, img, current_time, frame_count):
     img_filename = f"{image_folder}/frame_image_{frame_count}.png"
@@ -126,7 +141,7 @@ def main(model):
         frame_processed += 1
         save_frame(frame, frame_processed)
         cv2.imshow('cctv', frame)
-        if cv2.waitKey(100) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
     
     cam_stream.stop()
@@ -134,7 +149,7 @@ def main(model):
 
 
 # Initialization
-model = YOLO('yolov8nbest.pt')
+model = YOLO('yolov8n.pt')
 cam_stream = CamStream('test.mp4')
 cam_stream.start()
 
@@ -145,7 +160,10 @@ image_folder = "temp_images"
 if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
+# Set up the serial connection
+ser = serial.Serial('COM6', 115200, timeout=1)
+
+ref_image = cv2.imread('clean_handrail.jpg')
+
 if __name__ == "__main__":
     main(model)
-
-# ble_client = asyncio.run(ble_utils.connect(ESP32_ADDRESS))
