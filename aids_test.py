@@ -91,6 +91,8 @@ async def predict(model, img, frame_count, conf=0.5):
         return img
 
     current_time = datetime.datetime.now().strftime("%I:%M%p")
+
+    is_send = False
     for result in results:
         count = result.boxes.shape[0]
         for i in range(count):
@@ -116,8 +118,10 @@ async def predict(model, img, frame_count, conf=0.5):
 
                     # Check if the person is holding the handrail
                     if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
-                        await send_ble_signal()  # Await the asynchronous function
-                    write_to_excel(name, img, current_time, frame_count)
+                        is_send = True
+        if is_send:
+            await send_ble_signal()  # Await the asynchronous function
+            write_to_excel(name, img, current_time, frame_count)
 
     return img
 
