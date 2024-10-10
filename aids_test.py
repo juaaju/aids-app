@@ -10,6 +10,16 @@ from flet import *
 import base64
 import serial
 import numpy as np
+from bleak import BleakClient
+import asyncio
+import time
+
+# BLE device and characteristic details
+DEVICE_ADDRESS = "A0:A3:B3:2A:D8:22"  # MAC address of your ESP32
+SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+client = None
 
 # CamStream class for video stream handling
 class CamStream:
@@ -50,10 +60,32 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
-def predict(model, img, frame_count, conf=0.5):
-    global ser
+async def setup_ble_client():
+    global client
+    try:
+        client = BleakClient(DEVICE_ADDRESS)
+        await client.connect()
+        if client.is_connected:
+            print("Connected to BLE device")
+        else:
+            print("Failed to connect to BLE device")
+    except Exception as e:
+        print(f"Error connecting to BLE device: {e}")
+
+async def send_ble_signal():
+    global client
+    if client and client.is_connected:
+        try:
+            await client.write_gatt_char(CHARACTERISTIC_UUID, b'on\n')  # Send 'on' signal
+            print("Signal sent over BLE")
+        except Exception as e:
+            print(f"Error sending BLE signal: {e}")
+    else:
+        print("BLE client is not connected")
+
+async def predict(model, img, frame_count, conf=0.5):
     global ref_image
-    crop_img  = img.copy()
+    crop_img = img.copy()
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
         return img
@@ -68,19 +100,23 @@ def predict(model, img, frame_count, conf=0.5):
                 confidence = float(result.boxes.conf[i].item())
                 bbox = result.boxes.xywh[i].cpu().numpy()
                 x, y, w, h = bbox
-                lx = int(x-w/2)
-                ux = int(x+w/2)
-                ly = int(y-h/2)
-                uy = int(y+h/2)
+                lx = int(x - w / 2)
+                ux = int(x + w / 2)
+                ly = int(y - h / 2)
+                uy = int(y + h / 2)
                 cv2.rectangle(img, (lx, ly), (ux, uy), (255, 0, 255), 1)
                 cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
                             cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
-                if lx>=200 and ly>=50 and uy<=300:
+
+                # Adjust this condition based on your cropping logic
+                if lx >= 200 and ly >= 50 and uy <= 300:
                     pts1 = np.array([[256, 234], [258, 234], [305, 132], [303, 132]])
                     pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
                     crop_img = crop(crop_img, pts1, pts2)
+
+                    # Check if the person is holding the handrail
                     if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
-                        ser.write(('on\n').encode('utf-8'))  # Send data
+                        await send_ble_signal()  # Await the asynchronous function
                     write_to_excel(name, img, current_time, frame_count)
 
     return img
@@ -122,13 +158,19 @@ def adjust_dimensions(ws):
         for cell in row:
             ws.row_dimensions[cell.row].height = 300
 
+def export_data(e):
+    global frame_processed  # Track the number of processed frames
+    if frame_processed > 0:  # Check if there are frames to export
+        wb.save('handrail.xlsx')  # Save the workbook
+        shutil.rmtree(image_folder)  # Clean up temporary images
+
 
 def save_frame(frame):
     _, im_arr = cv2.imencode('.jpg', frame)
     im_b64 = base64.b64encode(im_arr)
     return im_b64.decode('utf-8')
 
-def start_detection(model, video):
+async def start_detection(model, video):
     global frame_b64
     global frame_processed
     while True:
@@ -136,9 +178,11 @@ def start_detection(model, video):
             break
         frame = cam_stream.read()
         frame = cv2.resize(frame, (416, 416))
-        frame = predict(model, frame, frame_processed)
+        frame = await predict(model, frame, frame_processed)
         frame_processed += 1
 
+        if frame_processed == 1:
+            video.src = None
         video.src_base64 = save_frame(frame)
         video.update()
     
@@ -182,16 +226,13 @@ def main(page: Page):
         border_radius=border_radius.all(16),
         fit=ImageFit.CONTAIN,
         src_base64=None,
+        src='sample_image.png'
     )
 
     # Dialogs
-    page.connect_success = AlertDialog(title=Text("Device is connected"))
-    page.connect_failed = AlertDialog(title=Text("Device connection failed. Please try again"))
-    page.login_success = AlertDialog(title=Text("Logged In"))
-    page.login_failed = AlertDialog(title=Text("Login failed. Please try again"))
-    page.started_app = AlertDialog(title=Text("AIDS Starting"))
-    page.stopped_app = AlertDialog(title=Text("AIDS Stopped"))
-    page.exported_data = AlertDialog(title=Text("Data Exported"))
+    connect_success = AlertDialog(title=Text("Device is connected"))
+    login_success = AlertDialog(title=Text("Logged In"))
+    login_failed = AlertDialog(title=Text("Login failed. Please try again"))
 
     def start_detection_thread(model, video):
         global detection_thread
@@ -221,8 +262,8 @@ def main(page: Page):
             # loading_spinner.visible = True
             page.update()
 
-            start_detection_thread(model, result_video)
-            # start_detection(model, result_video)
+            detection_thread = Thread(target=asyncio.run, args=(start_detection(model, result_video),))
+            detection_thread.start()
 
             # is_loading = False
             # loading_spinner.visible = False
@@ -231,42 +272,24 @@ def main(page: Page):
         page.update()
         is_running = not is_running
 
-    def feedback_test(e):
-        ser.write(('on\n').encode('utf-8'))  # Send data
-        response = ser.readline().decode('utf-8').strip()
-        if(response):    
-            page.dialog = page.connect_success
-            page.dialog.open = True
-            indicator.bgcolor = colors.GREEN  # Change indicator color to green
-            indicator.update()
-            page.update()
-        e
+    async def feedback_test(e):
+        await send_ble_signal()
+        page.open(connect_success)
+        indicator.bgcolor = colors.GREEN  # Change indicator color to green
+        indicator.update()
+        page.update()
 
     def login(e):
         if username.value == 'admin' and password.value == '123poleng':
-            page.dialog = page.login_success
-            page.dialog.open = True
+            page.open(login_success)
             start_stop_button_ref.current.disabled = False  # Enable the Start/Stop button
             start_stop_button_ref.current.update()
         else:
-            page.dialog = page.login_failed
-            page.dialog.open = True
+            page.open(login_failed)
+            password.value = ""
+            password.update()
 
         page.update()
-
-    def export_data(e):
-        global frame_processed  # Track the number of processed frames
-        if frame_processed > 0:  # Check if there are frames to export
-            wb.save('handrail.xlsx')  # Save the workbook
-            shutil.rmtree(image_folder)  # Clean up temporary images
-            print("Data exported successfully")
-            page.exported_data.open = True  # Show success dialog
-            page.update()
-        else:
-            # Optionally, show an alert if no data is available to export
-            page.dialog = AlertDialog(title=Text("No data available to export. Please run the stream first."))
-            page.dialog.open = True
-            page.update()
 
     # Layout setup
     page.add(
@@ -362,8 +385,6 @@ def main(page: Page):
         )
     )
 
-global send_signal
-send_signal = False
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
 
@@ -379,10 +400,14 @@ if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
 # Set up the serial connection
-ser = serial.Serial('COM5', 115200, timeout=1)
+# ser = serial.Serial('COM5', 115200, timeout=1)
 
 ref_image = cv2.imread('clean_handrail.png')
 
 if __name__ == "__main__":
+    # Run the BLE setup in an asyncio loop
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_ble_client())
+
     app(main)
     shutil.rmtree(image_folder)

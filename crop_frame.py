@@ -25,12 +25,16 @@ def crop(frame, pts1, pts2):
     return masked_image
 
 image = cv2.imread('sample_image.png')
-pts1 = np.array([[255, 234], [260, 234], [307, 130], [302, 131]])
-pts2 = np.array([[311, 113], [404, 91], [404, 95], [311, 117]])
+pts1 = np.array([[256, 234], [258, 234], [305, 132], [303, 132]])
+pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
 
-image = crop(image, pts1, pts2)
-cv2.imshow('image', image)
+crop_image = crop(image, pts1, pts2)
+cv2.imwrite('clean_handrail.png', crop_image)
+cv2.imshow('image', crop_image)
 cv2.waitKey(0)
+
+# plt.imshow(cv2.cvtColor(crop_image, cv2.COLOR_BGR2RGB))
+# plt.show()
 
 
 # cap = cv2.VideoCapture('test.mp4')

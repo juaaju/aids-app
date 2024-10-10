@@ -9,6 +9,15 @@ from openpyxl.drawing.image import Image
 from openpyxl import Workbook
 import shutil
 import serial
+from bleak import BleakClient
+import asyncio
+
+# BLE device and characteristic details
+DEVICE_ADDRESS = "A0:A3:B3:2A:D8:22"  # MAC address of your ESP32
+SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+client = None
 
 frame_processed = 0
 is_target = 'OFF'
@@ -52,10 +61,32 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
-def predict(model, img, frame_count, conf=0.5):
+async def setup_ble_client():
+    global client
+    try:
+        client = BleakClient(DEVICE_ADDRESS)
+        await client.connect()
+        if client.is_connected:
+            print("Connected to BLE device")
+        else:
+            print("Failed to connect to BLE device")
+    except Exception as e:
+        print(f"Error connecting to BLE device: {e}")
+
+async def send_ble_signal():
+    global client
+    if client and client.is_connected:
+        try:
+            await client.write_gatt_char(CHARACTERISTIC_UUID, b'on\n')  # Send 'on' signal
+            print("Signal sent over BLE")
+        except Exception as e:
+            print(f"Error sending BLE signal: {e}")
+    else:
+        print("BLE client is not connected")
+
+async def predict(model, img, frame_count, conf=0.5):
     global ref_image
-    # global ser
-    crop_img  = img.copy()
+    crop_img = img.copy()
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
         return img
@@ -70,22 +101,23 @@ def predict(model, img, frame_count, conf=0.5):
                 confidence = float(result.boxes.conf[i].item())
                 bbox = result.boxes.xywh[i].cpu().numpy()
                 x, y, w, h = bbox
-                lx = int(x-w/2)
-                ux = int(x+w/2)
-                ly = int(y-h/2)
-                uy = int(y+h/2)
+                lx = int(x - w / 2)
+                ux = int(x + w / 2)
+                ly = int(y - h / 2)
+                uy = int(y + h / 2)
                 cv2.rectangle(img, (lx, ly), (ux, uy), (255, 0, 255), 1)
                 cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
                             cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
-                if lx>=200 and ly>=50 and uy<=300:
+
+                # Adjust this condition based on your cropping logic
+                if lx >= 200 and ly >= 50 and uy <= 300:
                     pts1 = np.array([[256, 234], [258, 234], [305, 132], [303, 132]])
                     pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
                     crop_img = crop(crop_img, pts1, pts2)
+
+                    # Check if the person is holding the handrail
                     if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
-                        ser.write(('on\n').encode('utf-8'))  # Send data
-                        response = ser.readline().decode('utf-8').strip()
-                        if(response):
-                            print('res')
+                        await send_ble_signal()  # Await the asynchronous function
                     write_to_excel(name, img, current_time, frame_count)
 
     return img
@@ -136,14 +168,14 @@ def save_frame(frame, frame_count):
     img_filename = f"frames/latest_frame.png"
     cv2.imwrite(img_filename, frame)
 
-def main(model):
+async def main(model):
     global frame_processed
     while True:
         if cam_stream.stopped:
             break
         frame = cam_stream.read()
         frame = cv2.resize(frame, (416, 416))
-        frame = predict(model, frame, frame_processed)
+        frame = await predict(model, frame, frame_processed)
         frame_processed += 1
         save_frame(frame, frame_processed)
         cv2.imshow('cctv', frame)
@@ -167,10 +199,11 @@ if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
 # Set up the serial connection
-ser = serial.Serial('COM5', 115200, timeout=1)
+# ser = serial.Serial('COM5', 115200, timeout=1)
 
 ref_image = cv2.imread('clean_handrail.png')
 
 if __name__ == "__main__":
-    main(model)
-    export_data()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_ble_client())
+    asyncio.run(main(model))
