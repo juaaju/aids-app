@@ -8,22 +8,10 @@ from openpyxl import Workbook
 import shutil
 from flet import *
 import base64
-import serial
 import numpy as np
-from bleak import BleakClient
 import asyncio
-import sys
 import requests
-import time
-
-# BLE device and characteristic details
-DEVICE_ADDRESS = "40:91:51:9b:fd:e6"  # MAC address of your ESP32
-SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-
-ESP32_IP = 'http://<ESP32_IP_ADDRESS>/send-data'
-
-client = None
+import export_data
 
 # CamStream class for video stream handling
 class CamStream:
@@ -64,29 +52,6 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
-# async def setup_ble_client():
-#     global client
-#     try:
-#         client = BleakClient(DEVICE_ADDRESS)
-#         await client.connect()
-#         if client.is_connected:
-#             print("Connected to BLE device")
-#         else:
-#             print("Failed to connect to BLE device")
-#     except Exception as e:
-#         print(f"Error connecting to BLE device: {e}")
-
-# async def send_ble_signal():
-#     global client
-#     if client and client.is_connected:
-#         try:
-#             await client.write_gatt_char(CHARACTERISTIC_UUID, b'on')  # Send 'on' signal
-#             print("Signal sent over BLE")
-#         except Exception as e:
-#             print(f"Error sending BLE signal: {e}")
-#     else:
-#         print("BLE client is not connected")
-
 async def predict(model, img, frame_count, conf=0.5):
     global ref_image
     crop_img = img.copy()
@@ -121,11 +86,11 @@ async def predict(model, img, frame_count, conf=0.5):
                     crop_img = crop(crop_img, pts1, pts2)
 
                     # Check if the person is holding the handrail
-                    if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
+                    if calculate_pixel(crop_img[ly:uy, lx:ux]) > calculate_pixel(ref_image[ly:uy, lx:ux]):
                         is_send = True
     if is_send:
         response = requests.post(esp32_ip, data='on')
-        write_to_excel(name, img, current_time, frame_count)
+        export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
 
     return img
 
@@ -145,32 +110,6 @@ def crop(frame, pts1, pts2):
 
 def calculate_pixel(frame):
     return np.std(frame)
-
-def write_to_excel(data, img, current_time, frame_count):
-    img_filename = f"{image_folder}/frame_image_{frame_count}.png"
-    cv2.imwrite(img_filename, img)
-    img = Image(img_filename)
-
-    ws.append([data, current_time])
-    ws.add_image(img, 'C' + str(ws.max_row))
-
-    adjust_dimensions(ws)
-
-def adjust_dimensions(ws):
-    for col in ws.columns:
-        max_length = max(len(str(cell.value)) for cell in col if cell.value)
-        column = col[0].column_letter
-        ws.column_dimensions[column].width = max_length + 2
-
-    for row in ws.iter_rows():
-        for cell in row:
-            ws.row_dimensions[cell.row].height = 300
-
-def export_data(e):
-    global frame_processed  # Track the number of processed frames
-    if frame_processed > 0:  # Check if there are frames to export
-        wb.save('handrail.xlsx')  # Save the workbook
-        shutil.rmtree(image_folder)  # Clean up temporary images
 
 
 def save_frame(frame):
@@ -335,7 +274,7 @@ def main(page: Page):
                                 ),
                                 OutlinedButton(
                                     'Export Data',
-                                    on_click=export_data,
+                                    on_click=lambda e:export_data.export_to_excel(wb, image_folder, frame_processed),
                                     adaptive=True,
                                     width=500,
                                     style=ButtonStyle(
@@ -407,4 +346,5 @@ ref_image = cv2.imread('clean_handrail.png')
 
 if __name__ == "__main__":
     app(main)
-    shutil.rmtree(image_folder)
+    if os.path.exists(image_folder):
+        shutil.rmtree(image_folder)
