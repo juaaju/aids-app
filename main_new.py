@@ -167,7 +167,7 @@ if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
 # Set up the serial connection
-ser = serial.Serial('COM5', 115200, timeout=1)
+ser = serial.Serial('COM6', 115200, timeout=1)
 
 ref_image = cv2.imread('clean_handrail.png')
 

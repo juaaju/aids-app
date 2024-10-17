@@ -13,12 +13,15 @@ import numpy as np
 from bleak import BleakClient
 import asyncio
 import sys
+import requests
 import time
 
 # BLE device and characteristic details
 DEVICE_ADDRESS = "40:91:51:9b:fd:e6"  # MAC address of your ESP32
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+ESP32_IP = 'http://<ESP32_IP_ADDRESS>/send-data'
 
 client = None
 
@@ -61,28 +64,28 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
-async def setup_ble_client():
-    global client
-    try:
-        client = BleakClient(DEVICE_ADDRESS)
-        await client.connect()
-        if client.is_connected:
-            print("Connected to BLE device")
-        else:
-            print("Failed to connect to BLE device")
-    except Exception as e:
-        print(f"Error connecting to BLE device: {e}")
+# async def setup_ble_client():
+#     global client
+#     try:
+#         client = BleakClient(DEVICE_ADDRESS)
+#         await client.connect()
+#         if client.is_connected:
+#             print("Connected to BLE device")
+#         else:
+#             print("Failed to connect to BLE device")
+#     except Exception as e:
+#         print(f"Error connecting to BLE device: {e}")
 
-async def send_ble_signal():
-    global client
-    if client and client.is_connected:
-        try:
-            await client.write_gatt_char(CHARACTERISTIC_UUID, b'on')  # Send 'on' signal
-            print("Signal sent over BLE")
-        except Exception as e:
-            print(f"Error sending BLE signal: {e}")
-    else:
-        print("BLE client is not connected")
+# async def send_ble_signal():
+#     global client
+#     if client and client.is_connected:
+#         try:
+#             await client.write_gatt_char(CHARACTERISTIC_UUID, b'on')  # Send 'on' signal
+#             print("Signal sent over BLE")
+#         except Exception as e:
+#             print(f"Error sending BLE signal: {e}")
+#     else:
+#         print("BLE client is not connected")
 
 async def predict(model, img, frame_count, conf=0.5):
     global ref_image
@@ -121,7 +124,7 @@ async def predict(model, img, frame_count, conf=0.5):
                     if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
                         is_send = True
     if is_send:
-        await send_ble_signal()  # Await the asynchronous function
+        response = requests.post(esp32_ip, data='on')
         write_to_excel(name, img, current_time, frame_count)
 
     return img
@@ -239,11 +242,6 @@ def main(page: Page):
     login_success = AlertDialog(title=Text("Logged In"))
     login_failed = AlertDialog(title=Text("Login failed. Please try again"))
 
-    def start_detection_thread(model, video):
-        global detection_thread
-        # Start detection in a new thread to prevent blocking
-        detection_thread = Thread(target=start_detection, args=(model, video))
-        detection_thread.start()
 
     # Event Handlers
     def start_or_stop_app(e):
@@ -279,7 +277,7 @@ def main(page: Page):
         is_running = not is_running
 
     async def feedback_test(e):
-        await send_ble_signal()
+        response = requests.post(esp32_ip, data='on')
         page.open(connect_success)
         indicator.bgcolor = colors.GREEN  # Change indicator color to green
         indicator.update()
@@ -393,6 +391,7 @@ def main(page: Page):
 
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
+esp32_ip = "http://10.3.51.119/send-data"
 
 model = YOLO('yolov8n.pt')
 cam_stream = CamStream('test.mp4')
@@ -404,22 +403,8 @@ image_folder = "temp_images"
 if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
-# Set up the serial connection
-# ser = serial.Serial('COM5', 115200, timeout=1)
-
 ref_image = cv2.imread('clean_handrail.png')
 
 if __name__ == "__main__":
-    if sys.version_info < (3, 10):
-        loop = asyncio.get_event_loop()
-    else:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-
-        asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_ble_client())
-
     app(main)
     shutil.rmtree(image_folder)

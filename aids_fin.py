@@ -1,7 +1,6 @@
 import os
 import cv2
 from ultralytics import YOLO
-from threading import Thread
 import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
@@ -40,19 +39,19 @@ class CamStream:
             exit(0)
 
         self.stopped = True
-        self.t = Thread(target=self.update, args=())
-        self.t.daemon = True
+        self.task = None  # asyncio task
 
     def start(self):
         self.stopped = False
-        self.t.start()
+        self.task = asyncio.create_task(self.update())
 
-    def update(self):
+    async def update(self):
         while not self.stopped:
             self.grabbed, self.frame = self.vcap.read()
             if not self.grabbed:
                 self.stopped = True
                 break
+            await asyncio.sleep(0)  # Yield control to the event loop
         self.vcap.release()
 
     def read(self):
@@ -60,6 +59,9 @@ class CamStream:
 
     def stop(self):
         self.stopped = True
+        if self.task:
+            self.task.cancel()
+
 
 async def setup_ble_client():
     global client
@@ -84,6 +86,7 @@ async def send_ble_signal():
     else:
         print("BLE client is not connected")
 
+# Main predict function
 async def predict(model, img, frame_count, conf=0.5):
     global ref_image
     crop_img = img.copy()
@@ -92,8 +95,8 @@ async def predict(model, img, frame_count, conf=0.5):
         return img
 
     current_time = datetime.datetime.now().strftime("%I:%M%p")
+    tasks = []  # List to collect async tasks
 
-    is_send = False
     for result in results:
         count = result.boxes.shape[0]
         for i in range(count):
@@ -119,12 +122,21 @@ async def predict(model, img, frame_count, conf=0.5):
 
                     # Check if the person is holding the handrail
                     if calculate_pixel(crop_img[ly:uy, lx:ux]) <= calculate_pixel(ref_image[ly:uy, lx:ux]):
-                        is_send = True
-    if is_send:
-        await send_ble_signal()  # Await the asynchronous function
-        write_to_excel(name, img, current_time, frame_count)
+                        # Create a task for sending BLE signal without blocking prediction
+                        tasks.append(parallel_send_ble_signal())
+                        write_to_excel(name, img, current_time, frame_count)
+
+    # Await all tasks concurrently
+    if tasks:
+        await asyncio.gather(*tasks)  # Run all BLE sending tasks concurrently
 
     return img
+
+# A new function that ensures a delay before sending another signal
+async def parallel_send_ble_signal():
+    # Ensure some delay between sending signals to avoid flooding
+    await asyncio.sleep(2)  # Delay of 2 seconds between sending signals
+    await send_ble_signal()  # Call your BLE send function here
 
 def crop(frame, pts1, pts2):
 
@@ -178,9 +190,7 @@ def save_frame(frame):
 async def start_detection(model, video):
     global frame_b64
     global frame_processed
-    while True:
-        if cam_stream.stopped:
-            break
+    while not cam_stream.stopped:
         frame = cam_stream.read()
         frame = cv2.resize(frame, (416, 416))
         frame = await predict(model, frame, frame_processed)
@@ -190,9 +200,10 @@ async def start_detection(model, video):
             video.src = None
         video.src_base64 = save_frame(frame)
         video.update()
-    
+
     cam_stream.stop()
     cv2.destroyAllWindows()
+
 
 def main(page: Page):
     page.title = 'AIDS'
@@ -239,44 +250,22 @@ def main(page: Page):
     login_success = AlertDialog(title=Text("Logged In"))
     login_failed = AlertDialog(title=Text("Login failed. Please try again"))
 
-    def start_detection_thread(model, video):
-        global detection_thread
-        # Start detection in a new thread to prevent blocking
-        detection_thread = Thread(target=start_detection, args=(model, video))
-        detection_thread.start()
-
     # Event Handlers
-    def start_or_stop_app(e):
-        global detection_thread
+    async def start_or_stop_app(e):
         nonlocal is_running
-        nonlocal is_loading
         if is_running:
-            # Change to "Start" state
             cam_stream.stop()
             start_stop_button_ref.current.text = "Start"
             start_stop_button_ref.current.style.bgcolor = colors.GREEN
-
-            if detection_thread is not None:
-                detection_thread.join()  # Ensure thread completes before moving on
-                detection_thread = None
         else:
-            # Start main.py and video updates
-            cam_stream.start()
+            await asyncio.gather([cam_stream.start(), start_detection(model, result_video)], return_exceptions=True)
             start_stop_button_ref.current.text = "Stop"
             start_stop_button_ref.current.style.bgcolor = colors.RED
-            # is_loading = True
-            # loading_spinner.visible = True
-            page.update()
-
-            detection_thread = Thread(target=asyncio.run, args=(start_detection(model, result_video),))
-            detection_thread.start()
-
-            # is_loading = False
-            # loading_spinner.visible = False
 
         start_stop_button_ref.current.update()
         page.update()
         is_running = not is_running
+
 
     async def feedback_test(e):
         await send_ble_signal()
