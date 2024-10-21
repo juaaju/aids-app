@@ -57,6 +57,7 @@ async def predict(model, img, frame_count, conf=0.5):
     crop_img = img.copy()
     results = model(img, conf=conf, verbose=False)
     if not results or len(results) == 0:
+        ref_img = cv2.imwrite('ref_img.png', img)
         return img
 
     current_time = datetime.datetime.now().strftime("%I:%M%p")
@@ -85,8 +86,11 @@ async def predict(model, img, frame_count, conf=0.5):
                     pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
                     crop_img = crop(crop_img, pts1, pts2)
 
+                    pred_px = calculate_pixel(crop_img[ly:uy, lx:ux])
+                    ref_px = calculate_pixel(ref_image[ly:uy, lx:ux])
+
                     # Check if the person is holding the handrail
-                    if calculate_pixel(crop_img[ly:uy, lx:ux]) > calculate_pixel(ref_image[ly:uy, lx:ux]):
+                    if pred_px >= ref_px:
                         is_send = True
     if is_send:
         response = requests.post(esp32_ip, data='on')
@@ -330,7 +334,7 @@ def main(page: Page):
 
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
-esp32_ip = "http://10.3.51.119/send-data"
+esp32_ip = "http://192.168.100.163/send-data"
 
 model = YOLO('yolov8n.pt')
 cam_stream = CamStream('test.mp4')

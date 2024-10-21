@@ -15,7 +15,7 @@ import sys
 import time
 
 # BLE device and characteristic details
-DEVICE_ADDRESS = "40:91:51:9b:fd:e6"  # MAC address of your ESP32
+DEVICE_ADDRESS = "A0:A3:B3:2A:D8:22"  # MAC address of your ESP32
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
