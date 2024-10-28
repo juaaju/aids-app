@@ -82,7 +82,7 @@ def main(page: Page):
             # loading_spinner.visible = True
             page.update()
 
-            detection_thread = Thread(target=asyncio.run, args=(detection.start_detection(model, result_video, cam_stream, ref_image, ws, image_folder, frame_processed),))
+            detection_thread = Thread(target=asyncio.run, args=(detection.start_detection(model, result_video, cam_stream, ws, image_folder, frame_processed),))
             detection_thread.start()
 
             # is_loading = False
@@ -223,8 +223,6 @@ if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
 # ser = serial.Serial('COM5', 115200, timeout=1)
-
-ref_image = cv2.imread('ref_img.png')
 
 if __name__ == "__main__":
     app(main)

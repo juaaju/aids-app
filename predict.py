@@ -34,10 +34,12 @@ def calculate_red_pixel_std(frame):
     # Calculate the standard deviation of the red channel pixels
     return np.std(red_values)
 
-async def predict(model, img, ref_image, frame_count, ws, image_folder, conf=0.5, serial=''):
+async def predict(model, img, frame_count, ws, image_folder, conf=0.5, serial=''):
+    pred_px = 0
+    ref_px = 0
     crop_img = img.copy()
     results = model(img, conf=conf, verbose=False)
-    if not results or len(results) == 0 and frame_count%1000 == 0:
+    if not results or len(results) == 0:
         cv2.imwrite('ref_img.png', img)
         return img
 
@@ -63,6 +65,7 @@ async def predict(model, img, ref_image, frame_count, ws, image_folder, conf=0.5
 
                 # Adjust this condition based on your cropping logic
                 if lx >= 200 and ly >= 50 and uy <= 300:
+                    ref_image = cv2.imread('ref_img.png')
                     pts1 = np.array([[256, 234], [258, 234], [305, 132], [303, 132]])
                     pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
                     crop_img = crop(crop_img, pts1, pts2)
@@ -73,12 +76,28 @@ async def predict(model, img, ref_image, frame_count, ws, image_folder, conf=0.5
                     # Check if the person is holding the handrail
                     if pred_px >= ref_px:
                         is_send = True
+            else:
+                cv2.imwrite('ref_img.png', img)
+                return img
+
     if is_send:
+        print('prediction:')
+        print(pred_px)
+        print('reference:')
+        print(ref_px)
+        # test
+        print('not holding handrail')
         # Wifi
-        response = requests.post(esp32_ip, data='on')
+        # response = requests.post(esp32_ip, data='on')
         # Serial USB
         # ser.write(b'on')
         export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
-        time.sleep(3)
+        time.sleep(1)
+    else:
+        print('prediction:')
+        print(pred_px)
+        print('reference:')
+        print(ref_px)
+        print('handrail')
 
     return img
