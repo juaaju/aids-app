@@ -2,16 +2,146 @@ import os
 import cv2
 from ultralytics import YOLO
 from threading import Thread
+import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
 import shutil
 from flet import *
+import base64
+import numpy as np
 import asyncio
 import requests
 import export_data
 import serial
-import camstream
-import detection
+import time
+
+# CamStream class for video stream handling
+class CamStream:
+    def __init__(self, stream_id=0):
+        self.stream_id = stream_id
+        self.vcap = cv2.VideoCapture(self.stream_id)
+        if not self.vcap.isOpened():
+            print("[Exiting]: Error accessing stream.")
+            exit(0)
+
+        fps_input_stream = int(self.vcap.get(5))
+        print(f"FPS of hardware/input stream: {fps_input_stream}")
+
+        self.grabbed, self.frame = self.vcap.read()
+        if not self.grabbed:
+            print('[Exiting] No more frames to read')
+            exit(0)
+
+        self.stopped = True
+        self.t = Thread(target=self.update, args=())
+        self.t.daemon = True
+
+    def start(self):
+        self.stopped = False
+        self.t.start()
+
+    def update(self):
+        while not self.stopped:
+            self.grabbed, self.frame = self.vcap.read()
+            if not self.grabbed:
+                self.stopped = True
+                break
+        self.vcap.release()
+
+    def read(self):
+        return self.frame
+
+    def stop(self):
+        self.stopped = True
+
+async def predict(model, img, frame_count, conf=0.5):
+    global ref_image
+    crop_img = img.copy()
+    results = model(img, conf=conf, verbose=False)
+    if not results or len(results) == 0:
+        ref_img = cv2.imwrite('ref_img.png', img)
+        return img
+
+    current_time = datetime.datetime.now().strftime("%I:%M%p")
+
+    is_send = False
+    for result in results:
+        count = result.boxes.shape[0]
+        for i in range(count):
+            cls = int(result.boxes.cls[i].item())
+            name = result.names[cls]
+            if name == 'person':
+                confidence = float(result.boxes.conf[i].item())
+                bbox = result.boxes.xywh[i].cpu().numpy()
+                x, y, w, h = bbox
+                lx = int(x - w / 2)
+                ux = int(x + w / 2)
+                ly = int(y - h / 2)
+                uy = int(y + h / 2)
+                cv2.rectangle(img, (lx, ly), (ux, uy), (255, 0, 255), 1)
+                cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
+                            cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
+
+                # Adjust this condition based on your cropping logic
+                if lx >= 200 and ly >= 50 and uy <= 300:
+                    pts1 = np.array([[256, 234], [258, 234], [305, 132], [303, 132]])
+                    pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
+                    crop_img = crop(crop_img, pts1, pts2)
+
+                    pred_px = calculate_pixel(crop_img[ly:uy, lx:ux])
+                    ref_px = calculate_pixel(ref_image[ly:uy, lx:ux])
+
+                    # Check if the person is holding the handrail
+                    if pred_px >= ref_px:
+                        is_send = True
+    if is_send:
+        ser.write(b'on')
+        export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
+        time.sleep(3)
+
+    return img
+
+def crop(frame, pts1, pts2):
+
+    # Create a mask of the same size as the image, initialized with zeros (black)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+   # Fill the two polygons on the mask with white (255)
+    cv2.fillPoly(mask, [pts1], 255)
+    cv2.fillPoly(mask, [pts2], 255)
+
+    # Apply the mask to the image
+    masked_image = cv2.bitwise_and(frame, frame, mask=mask)
+
+    return masked_image
+
+def calculate_pixel(frame):
+    return np.std(frame)
+
+
+def save_frame(frame):
+    _, im_arr = cv2.imencode('.jpg', frame)
+    im_b64 = base64.b64encode(im_arr)
+    return im_b64.decode('utf-8')
+
+async def start_detection(model, video):
+    global frame_b64
+    global frame_processed
+    while True:
+        if cam_stream.stopped:
+            break
+        frame = cam_stream.read()
+        frame = cv2.resize(frame, (416, 416))
+        frame = await predict(model, frame, frame_processed)
+        frame_processed += 1
+
+        if frame_processed == 1:
+            video.src = None
+        video.src_base64 = save_frame(frame)
+        video.update()
+    
+    cam_stream.stop()
+    cv2.destroyAllWindows()
 
 def main(page: Page):
     page.title = 'AIDS'
@@ -82,7 +212,7 @@ def main(page: Page):
             # loading_spinner.visible = True
             page.update()
 
-            detection_thread = Thread(target=asyncio.run, args=(detection.start_detection(model, result_video, cam_stream, ref_image, ws, image_folder, frame_processed),))
+            detection_thread = Thread(target=asyncio.run, args=(start_detection(model, result_video),))
             detection_thread.start()
 
             # is_loading = False
@@ -93,10 +223,7 @@ def main(page: Page):
         is_running = not is_running
 
     async def feedback_test(e):
-        # WIFI
         response = requests.post(esp32_ip, data='on')
-        # Serial USB
-        # ser.write(b'on')
         page.open(connect_success)
         indicator.bgcolor = colors.GREEN  # Change indicator color to green
         indicator.update()
@@ -210,10 +337,10 @@ def main(page: Page):
 
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
-esp32_ip = "http://192.168.100.176/send-data"
+esp32_ip = "http://192.168.100.163/send-data"
 
 model = YOLO('yolov8n.pt')
-cam_stream = camstream.CamStream('test.mp4')
+cam_stream = CamStream('test.mp4')
 
 wb = Workbook()
 ws = wb.active
@@ -222,9 +349,9 @@ image_folder = "temp_images"
 if not os.path.exists(image_folder):
     os.makedirs(image_folder)
 
-# ser = serial.Serial('COM5', 115200, timeout=1)
+ser = serial.Serial('COM5', 115200, timeout=1)
 
-ref_image = cv2.imread('ref_img.png')
+ref_image = cv2.imread('clean_handrail.png')
 
 if __name__ == "__main__":
     app(main)

@@ -3,12 +3,19 @@ import cv2
 from ultralytics import YOLO
 from threading import Thread
 import datetime
-from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.drawing.image import Image
 from openpyxl import Workbook
 import shutil
 from flet import *
 import base64
+import numpy as np
+import asyncio
+import requests
+import export_data
+import serial
+import time
 
+# CamStream class for video stream handling
 class CamStream:
     def __init__(self, stream_id=0):
         self.stream_id = stream_id
@@ -47,150 +54,109 @@ class CamStream:
     def stop(self):
         self.stopped = True
 
+async def predict(model, img, frame_count, conf=0.5):
+    # crop image first
+    crop_image = img.copy()
+    results = model(img, conf=conf, verbose=False)
+    if not results or len(results) == 0:
+        return img
 
-class AIDS:
-    def __init__(self):
-        self.frame_processed = 0
-        self.is_target = 'OFF'
-        self.model = YOLO('yolov8nbest.pt')
-        self.cam_stream = CamStream(0)
-        self.cam_stream.start()
-        
-        self.wb = Workbook()
-        self.ws = self.wb.active
-        self.image_folder = "temp_images"
-        
-        if not os.path.exists(self.image_folder):
-            os.makedirs(self.image_folder)
-        
-        self.is_running = False
-        self.is_loading = False
+    current_time = datetime.datetime.now().strftime("%I:%M%p")
 
-    def predict(self, img, conf=0.5):
-        results = self.model(img, conf=conf, verbose=False)
-        if not results or len(results) == 0:
-            return img
-
-        current_time = datetime.datetime.now().strftime("%I:%M%p")
-        for result in results:
-            count = result.boxes.shape[0]
-            for i in range(count):
-                cls = int(result.boxes.cls[i].item())
-                name = result.names[cls]
+    is_helmet = False
+    for result in results:
+        count = result.boxes.shape[0]
+        for i in range(count):
+            cls = int(result.boxes.cls[i].item())
+            name = result.names[cls]
+            if name == 'helmet' or name == 'head':
                 confidence = float(result.boxes.conf[i].item())
                 bbox = result.boxes.xywh[i].cpu().numpy()
                 x, y, w, h = bbox
-                cv2.rectangle(img, (int(x - w/2), int(y - h/2)), (int(x + w/2), int(y + h/2)), (255, 0, 255), 1)
+                lx = int(x - w / 2)
+                ux = int(x + w / 2)
+                ly = int(y - h / 2)
+                uy = int(y + h / 2)
+                cv2.rectangle(img, (lx, ly), (ux, uy), (255, 0, 255), 1)
                 cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
                             cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
-                self.write_to_excel(name, img, current_time)
-                self.is_target_object(name)
 
-        return img
+                if name == 'helmet':
+                    is_helmet = True
+    if is_helmet:
+        ser.write(('helmet\n').encode('utf-8'))
+        time.sleep(3)
+    else:
+        ser.write(('nohelmet\n').encode('utf-8'))
+        time.sleep(3)
 
-    def is_target_object(self, name):
-        if name in ['nohandrailmidleft', 'nohandrailleftfar', 'nohandrailmidright', 'nohandrailrightfar', 'nohandrailupleft', 'nohandraillowright']:
-            self.is_target = '1'
+    return img
 
-    def write_to_excel(self, data, img, current_time):
-        img_filename = f"{self.image_folder}/frame_image_{self.frame_processed}.png"
-        cv2.imwrite(img_filename, img)
-        img = ExcelImage(img_filename)
+def crop(frame, pts1, pts2):
 
-        self.ws.append([data, current_time])
-        self.ws.add_image(img, 'C' + str(self.ws.max_row))
+    # Create a mask of the same size as the image, initialized with zeros (black)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
 
-        self.adjust_dimensions()
+   # Fill the two polygons on the mask with white (255)
+    cv2.fillPoly(mask, [pts1], 255)
+    cv2.fillPoly(mask, [pts2], 255)
 
-    def adjust_dimensions(self):
-        for col in self.ws.columns:
-            max_length = max(len(str(cell.value)) for cell in col if cell.value)
-            column = col[0].column_letter
-            self.ws.column_dimensions[column].width = max_length + 2
+    # Apply the mask to the image
+    masked_image = cv2.bitwise_and(frame, frame, mask=mask)
 
-        for row in self.ws.iter_rows():
-            for cell in row:
-                self.ws.row_dimensions[cell.row].height = 300
+    return masked_image
 
-    def export_data(self):
-        self.wb.save('handrail.xlsx')
-        shutil.rmtree(self.image_folder)
-        print("Data exported successfully")
+def calculate_pixel(frame):
+    return np.std(frame)
 
-    def save_frame(self, frame):
-        _, im_arr = cv2.imencode('.png', frame)
-        im_b64 = base64.b64encode(im_arr).decode('utf-8')
-        return im_b64
 
-    def start_detection(self, video):
-        while True:
-            if self.cam_stream.stopped:
-                break
-            frame = self.cam_stream.read()
-            frame = cv2.resize(frame, (416, 416))
-            frame = self.predict(frame)
-            self.frame_processed += 1
+def save_frame(frame):
+    _, im_arr = cv2.imencode('.jpg', frame)
+    im_b64 = base64.b64encode(im_arr)
+    return im_b64.decode('utf-8')
 
-            frame_b64 = self.save_frame(frame)
-            video.src = f"data:image/png;base64,{frame_b64}"
-            video.update()
+async def start_detection(model, video):
+    global frame_b64
+    global frame_processed
+    while True:
+        if cam_stream.stopped:
+            break
+        frame = cam_stream.read()
+        frame = cv2.resize(frame, (416, 416))
+        frame = await predict(model, frame, frame_processed)
+        frame_processed += 1
 
-        self.cam_stream.stop()
-        cv2.destroyAllWindows()
+        if frame_processed == 1:
+            video.src = None
+        video.src_base64 = save_frame(frame)
+        video.update()
     
-    def start_or_stop_app(self, e, start_stop_button_ref, video):
-        if self.is_running:
-            self.page.dialog = self.page.stopped_app
-            self.page.dialog.open = True
-            start_stop_button_ref.current.text = "Start"
-            start_stop_button_ref.current.bgcolor = colors.GREEN
-        else:
-            self.is_loading = True
-            self.page.dialog = self.page.started_app
-            self.page.dialog.open = True
-            start_stop_button_ref.current.text = "Stop"
-            start_stop_button_ref.current.bgcolor = colors.RED
-
-            self.detection_app.start_detection(video)
-
-            self.is_loading = False
-
-        start_stop_button_ref.current.update()
-        self.page.update()
-        self.is_running = not self.is_running
-    
-    def build(self):
-        self.img = Image(
-            width=400,
-            height=300,
-            border_radius=border_radius.all(16),
-            color=colors.BLACK,
-            fit=ImageFit.CONTAIN
-        )
-
-        return self.img
-
+    cam_stream.stop()
+    cv2.destroyAllWindows()
 
 def main(page: Page):
-    app = AIDS()
     page.title = 'AIDS'
     page.vertical_alignment = MainAxisAlignment.CENTER
     page.bgcolor = colors.WHITE
 
-    video = app.build()
-
+    # Track button states
+    is_running = False  # Track if the app is running
+    is_loading = False  # Track if loading spinner should be shown
     start_stop_button_ref = Ref[FilledButton]()
 
+    # Light indicator container
     indicator = Container(
         width=25,
         height=25,
-        bgcolor=colors.RED,
+        bgcolor=colors.RED,  # Start with red
         border_radius=25,
     )
 
+    # Username and password fields
     username = TextField(label='Username', border=InputBorder.NONE, filled=True, prefix_icon=icons.PERSON)
     password = TextField(label='Password', password=True, can_reveal_password=True, border=InputBorder.NONE, filled=True, prefix_icon=icons.LOCK)
 
+    # Loading spinner (only shown when is_loading=True)
     loading_spinner = Row(
         [
             ProgressRing(stroke_width=2, color=colors.BLUE_500),
@@ -199,36 +165,79 @@ def main(page: Page):
         visible=False
     )
 
-    page.connect_success = AlertDialog(title=Text("Device is connected"))
-    page.connect_failed = AlertDialog(title=Text("Device connection failed. Please try again"))
-    page.login_success = AlertDialog(title=Text("Logged In"))
-    page.login_failed = AlertDialog(title=Text("Login failed. Please try again"))
-    page.started_app = AlertDialog(title=Text("AIDS Starting"))
-    page.stopped_app = AlertDialog(title=Text("AIDS Stopped"))
-    page.exported_data = AlertDialog(title=Text("Data Exported"))
+    result_video = Image(
+        width=400,
+        height=300,
+        border_radius=border_radius.all(16),
+        fit=ImageFit.CONTAIN,
+        src_base64=None,
+        src='sample_image.png'
+    )
 
-    def login(e):
-        if username.value == 'admin' and password.value == '123poleng':
-            page.dialog = page.login_success
-            page.dialog.open = True
-            start_stop_button_ref.current.disabled = False
+    # Dialogs
+    connect_success = AlertDialog(title=Text("Device is connected"))
+    login_success = AlertDialog(title=Text("Logged In"))
+    login_failed = AlertDialog(title=Text("Login failed. Please try again"))
+
+
+    # Event Handlers
+    def start_or_stop_app(e):
+        global detection_thread
+        nonlocal is_running
+        nonlocal is_loading
+        if is_running:
+            # Change to "Start" state
+            cam_stream.stop()
+            start_stop_button_ref.current.text = "Start"
+            start_stop_button_ref.current.style.bgcolor = colors.GREEN
+
+            if detection_thread is not None:
+                detection_thread.join()  # Ensure thread completes before moving on
+                detection_thread = None
         else:
-            page.dialog = page.login_failed
-            page.dialog.open = True
+            # Start main.py and video updates
+            cam_stream.start()
+            start_stop_button_ref.current.text = "Stop"
+            start_stop_button_ref.current.style.bgcolor = colors.RED
+            # is_loading = True
+            # loading_spinner.visible = True
+            page.update()
 
+            detection_thread = Thread(target=asyncio.run, args=(start_detection(model, result_video),))
+            detection_thread.start()
+
+            # is_loading = False
+            # loading_spinner.visible = False
+
+        start_stop_button_ref.current.update()
         page.update()
+        is_running = not is_running
 
-    def feedback_test(e):
-        page.dialog = page.connect_success
-        page.dialog.open = True
+    async def feedback_test(e):
+        ser.write(('helmet\n').encode('utf-8'))
+        page.open(connect_success)
         indicator.bgcolor = colors.GREEN  # Change indicator color to green
         indicator.update()
         page.update()
 
+    def login(e):
+        if username.value == 'admin' and password.value == '123poleng':
+            page.open(login_success)
+            start_stop_button_ref.current.disabled = False  # Enable the Start/Stop button
+            start_stop_button_ref.current.update()
+        else:
+            page.open(login_failed)
+            password.value = ""
+            password.update()
+
+        page.update()
+
+    # Layout setup
     page.add(
         Container(
             content=Row(
                 [
+                    # Left side: Login section
                     Container(
                         width=400,
                         content=Column(
@@ -250,11 +259,11 @@ def main(page: Page):
                                 ),
                                 FilledButton(
                                     'Start',
-                                    on_click=lambda e: app.start_or_stop_app(e, start_stop_button_ref, page, video),
+                                    on_click=start_or_stop_app,
                                     adaptive=True,
                                     ref=start_stop_button_ref,
                                     width=500,
-                                    disabled=True,
+                                    disabled=True,  # Initially disabled
                                     style=ButtonStyle(
                                         color=colors.WHITE,
                                         bgcolor=colors.GREEN,
@@ -263,7 +272,7 @@ def main(page: Page):
                                 ),
                                 OutlinedButton(
                                     'Export Data',
-                                    on_click=app.export_data,
+                                    on_click=lambda e:export_data.export_to_excel(wb, image_folder, frame_processed),
                                     adaptive=True,
                                     width=500,
                                     style=ButtonStyle(
@@ -278,7 +287,14 @@ def main(page: Page):
                     # Right side: Video frame and feedback
                     Column(
                         [
-                            AIDS(),
+                            Container(
+                                alignment=alignment.center,
+                                border_radius=border_radius.all(20),
+                                bgcolor=colors.BLACK,
+                                width=400,
+                                height=300,
+                                content=result_video
+                            ),
                             Row(
                                 [
                                     OutlinedButton(
@@ -310,5 +326,23 @@ def main(page: Page):
         )
     )
 
+frame_processed = 0
+video_path = "rtsp://admin:123pertamina@http://10.205.68.67/:554/Streaming/Channels/201"
+esp32_ip = "http://192.168.100.163/send-data"
+
+model = YOLO('helmet_yolov8.pt')
+cam_stream = CamStream(video_path)
+
+wb = Workbook()
+ws = wb.active
+
+image_folder = "temp_images"
+if not os.path.exists(image_folder):
+    os.makedirs(image_folder)
+
+ser = serial.Serial('COM3', 115200, timeout=1)
+
 if __name__ == "__main__":
-    app(target=main)
+    app(main)
+    if os.path.exists(image_folder):
+        shutil.rmtree(image_folder)
