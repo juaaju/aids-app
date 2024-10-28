@@ -24,6 +24,16 @@ def crop(frame, pts1, pts2):
 def calculate_pixel(frame):
     return np.std(frame)
 
+def calculate_red_pixel_std(frame):
+    # Extract the red channel (assuming BGR format)
+    red_channel = frame[:, :, 2]
+    
+    # Filter out zero pixels (those not in the masked area)
+    red_values = red_channel[red_channel > 0]
+    
+    # Calculate the standard deviation of the red channel pixels
+    return np.std(red_values)
+
 async def predict(model, img, ref_image, frame_count, ws, image_folder, conf=0.5, serial=''):
     crop_img = img.copy()
     results = model(img, conf=conf, verbose=False)
@@ -57,8 +67,8 @@ async def predict(model, img, ref_image, frame_count, ws, image_folder, conf=0.5
                     pts2 = np.array([[312, 113], [404, 92], [404, 94], [312, 115]])
                     crop_img = crop(crop_img, pts1, pts2)
 
-                    pred_px = calculate_pixel(crop_img[ly:uy, lx:ux])
-                    ref_px = calculate_pixel(ref_image[ly:uy, lx:ux])
+                    pred_px = calculate_red_pixel_std(crop_img[ly:uy, lx:ux])
+                    ref_px = calculate_red_pixel_std(ref_image[ly:uy, lx:ux])
 
                     # Check if the person is holding the handrail
                     if pred_px >= ref_px:

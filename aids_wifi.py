@@ -334,7 +334,7 @@ def main(page: Page):
 
 frame_processed = 0
 video_path = "rtsp://admin:pertamina321@10.205.64.111:554/Streaming/Channels/301"
-esp32_ip = "http://192.168.100.163/send-data"
+esp32_ip = "http://192.168.115.24/send-data"
 
 model = YOLO('yolov8n.pt')
 cam_stream = CamStream('test.mp4')

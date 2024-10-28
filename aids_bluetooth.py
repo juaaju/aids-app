@@ -12,7 +12,6 @@ import numpy as np
 import asyncio
 import requests
 import export_data
-from pybluez import bluetooth
 import serial
 
 # CamStream class for video stream handling
