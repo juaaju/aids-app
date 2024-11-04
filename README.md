@@ -1,12 +1,23 @@
 ---
-
 # Artificial Intelligence-Based Detection System (AIDS) for Unsafe Condition
 
 An AI-powered detection system designed to enhance workplace safety by identifying unsafe conditions in real-time. Developed for **Pertamina EP, Poleng Field**, this system monitors key safety behaviors, logs violations, and sends notifications to help prevent accidents.
+---
+
+## User Interface Screenshots
+
+### Main Dashboard
+
+![Main Dashboard](images/aids.png)
+
+### Violation Log
+
+![Violation Log](images/aidsexcel.png)
 
 ---
 
 ## Table of Contents
+
 1. [Features](#features)
 2. [Technologies Used](#technologies-used)
 3. [System Architecture](#system-architecture)
@@ -50,6 +61,7 @@ An AI-powered detection system designed to enhance workplace safety by identifyi
 ## Installation
 
 1. **Clone the Repository**
+
    ```bash
    git clone https://github.com/dzakyadlh/aids-app.git
    cd aids-app
@@ -57,6 +69,7 @@ An AI-powered detection system designed to enhance workplace safety by identifyi
 
 2. **Install Required Packages**
    Ensure Python 3.7+ is installed, then install dependencies:
+
    ```bash
    pip install ultralytics openpyxl flet requests pyserial playsound
    ```
@@ -64,7 +77,6 @@ An AI-powered detection system designed to enhance workplace safety by identifyi
 3. **Set Up ESP32**
    - Load the provided firmware onto your ESP32 device.
    - Make sure the ESP32 device is connected to your buzzer light and PC/Laptop.
-     
 4. **Initialize App**
    - Create a file named `video_path.py` on the app directory.
    - Write your CCTV/Video input url into this file. Check the example below:
@@ -73,13 +85,14 @@ An AI-powered detection system designed to enhance workplace safety by identifyi
      video_path_line_of_fire = "rtsp://username:password@ip_address:554/Streaming/Channels/501"
      video_path_safety_equipment = "rtsp://username:password@ip_address:554/Streaming/Channels/401"
      ```
-     
+
 ---
 
 ## Usage
 
 1. **Run the Application**
    Launch the main detection application:
+
    ```bash
    python app.py
    ```
@@ -95,7 +108,6 @@ An AI-powered detection system designed to enhance workplace safety by identifyi
    - Use the Flet-based UI to monitor violations and access real-time detection.
    - Violations will trigger alerts via the ESP32, and they’ll be logged in the application.
    - To export the data, press the `Export Data` button on the app. The data will be exported into `exported_data` folder with `yyyy-mm-dd` name format.
-     
 3. **Additional Notes**
    - You can check whether your ESP32 is already connected by clicking on the Feedback Test button.
    - App can only be started once. Once you clicked stop, you need to reopen the app to start again.

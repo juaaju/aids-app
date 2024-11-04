@@ -202,8 +202,8 @@ async def predict_handrail(model, img, frame_count, conf=0.3):
         # Wifi
         # response = requests.post(esp32_ip, data='on')
         # Serial USB
-        # ser.write(b'on')
-        playsound('alerts/alert_hr.mp3')
+        ser.write(b'on')
+        # playsound('alerts/alert_hr.mp3')
         export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
         time.sleep(1)
     else:
@@ -387,7 +387,7 @@ def main(page: Page):
             if feature_picker.value == 'Handrail Detection':
                 model = YOLO('models/handrail.pt')
                 cam_stream = CamStream(video_path_handrail)
-                # ser = serial.Serial('COM5', 115200, timeout=1)
+                ser = serial.Serial('COM5', 115200, timeout=1)
             elif feature_picker.value == 'Line of Fire Detection':
                 model = YOLO('models/line_of_fire.pt')
                 cam_stream = CamStream(video_path_line_of_fire)
@@ -436,112 +436,136 @@ def main(page: Page):
     # Layout setup
     page.add(
         Container(
-            content=Row(
+            alignment=alignment.center,
+            content=Column(
                 [
-                    # Left side: Login section
+                    # Header Section
                     Container(
-                        width=400,
+                        alignment=alignment.center,
+                        margin=margin.only(bottom=16),
                         content=Column(
                             [
-                                Container(
-                                    margin=margin.only(bottom=16),
-                                    content=Column(
-                                        [
-                                            Image(src='images/pertamina.png', width=100),
-                                            Text('PERTAMINA \n"AIDS"', style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)),
-                                        ]
-                                    )
-                                ),
-                                Container(
-                                    margin=margin.only(bottom=16),
-                                    content=Column(
-                                        [
-                                            username,
-                                            password,
-                                            FilledButton(
-                                                'Login',
-                                                on_click=login,
-                                                adaptive=True,
-                                                width=500,
-                                                style=ButtonStyle(
-                                                    color=colors.WHITE,
-                                                    bgcolor=colors.RED,
-                                                    padding=padding.symmetric(vertical=20)
-                                                )
-                                            ),
-                                        ]
-                                    )
-                                ),
-                                Text('Choose what you want to detect', style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
-                                feature_picker,
-                                FilledButton(
-                                    'Start',
-                                    on_click=start_or_stop_app,
-                                    adaptive=True,
-                                    ref=start_stop_button_ref,
-                                    width=500,
-                                    disabled=True,  # Initially disabled
-                                    style=ButtonStyle(
-                                        color=colors.WHITE,
-                                        bgcolor=colors.GREEN,
-                                        padding=padding.symmetric(vertical=20)
-                                    )
-                                ),
-                                OutlinedButton(
-                                    'Export Data',
-                                    on_click=lambda e:export_data.export_to_excel(wb, image_folder, frame_processed),
-                                    adaptive=True,
-                                    width=500,
-                                    style=ButtonStyle(
-                                        color=colors.BLACK,
-                                        padding=padding.symmetric(vertical=20)
-                                    )
+                                Image(src='images/pertamina.png', width=100),
+                                Text(
+                                    'AIDS',
+                                    style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
                                 ),
                             ],
-                            spacing=16
-                        ),
+                            alignment=CrossAxisAlignment.CENTER
+                        )
                     ),
-                    # Right side: Video frame and feedback
-                    Column(
+                    # Main Row: Video Section (Left) and Input Section (Right)
+                    Row(
                         [
+                            # Video Section
                             Container(
-                                alignment=alignment.center,
-                                border_radius=border_radius.all(20),
-                                bgcolor=colors.BLACK,
                                 width=400,
-                                height=300,
-                                content=result_video
+                                content=Column(
+                                    [
+                                        Container(
+                                            alignment=alignment.center,
+                                            border_radius=border_radius.all(20),
+                                            bgcolor=colors.BLACK,
+                                            width=400,
+                                            height=300,
+                                            content=result_video
+                                        ),
+                                        Row(
+                                            [
+                                                OutlinedButton(
+                                                    'Feedback Test',
+                                                    on_long_press=feedback_test,
+                                                    adaptive=True,
+                                                    width=150,
+                                                    style=ButtonStyle(
+                                                        color=colors.BLACK,
+                                                        padding=padding.symmetric(vertical=20)
+                                                    )
+                                                ),
+                                                indicator  # Light indicator container
+                                            ],
+                                            alignment=MainAxisAlignment.SPACE_BETWEEN,
+                                            width=400
+                                        ),
+                                        loading_spinner  # Show loading spinner if is_loading=True
+                                    ],
+                                    spacing=16
+                                ),
                             ),
-                            Row(
-                                [
-                                    OutlinedButton(
-                                        'Feedback Test',
-                                        on_long_press=feedback_test,
-                                        adaptive=True,
-                                        width=150,
-                                        style=ButtonStyle(
-                                            color=colors.BLACK,
-                                            padding=padding.symmetric(vertical=20)
-                                        )
-                                    ),
-                                    indicator  # Light indicator container
-                                ],
-                                alignment=MainAxisAlignment.SPACE_BETWEEN,
-                                width=400
-                            ),
-                            loading_spinner  # Show loading spinner if is_loading=True
+                            # Input Fields Section
+                            Container(
+                                width=400,
+                                padding=padding.all(10),
+                                alignment=alignment.center,
+                                content=Column(
+                                    [
+                                        Container(
+                                            margin=margin.only(bottom=16),
+                                            content=Column(
+                                                [
+                                                    Text(
+                                                        'Please login to start the app',
+                                                        style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
+                                                    ),
+                                                    username,
+                                                    password,
+                                                    FilledButton(
+                                                        'Login',
+                                                        on_click=login,
+                                                        adaptive=True,
+                                                        width=500,
+                                                        style=ButtonStyle(
+                                                            color=colors.WHITE,
+                                                            bgcolor=colors.RED,
+                                                            padding=padding.symmetric(vertical=20)
+                                                        )
+                                                    ),
+                                                ]
+                                            )
+                                        ),
+                                        Text(
+                                            'Choose what you want to detect',
+                                            style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
+                                        ),
+                                        feature_picker,
+                                        FilledButton(
+                                            'Start',
+                                            on_click=start_or_stop_app,
+                                            adaptive=True,
+                                            ref=start_stop_button_ref,
+                                            width=500,
+                                            disabled=True,  # Initially disabled
+                                            style=ButtonStyle(
+                                                color=colors.WHITE,
+                                                bgcolor=colors.GREEN,
+                                                padding=padding.symmetric(vertical=20)
+                                            )
+                                        ),
+                                        OutlinedButton(
+                                            'Export Data',
+                                            on_click=lambda e: export_data.export_to_excel(wb, image_folder, frame_processed),
+                                            adaptive=True,
+                                            width=500,
+                                            style=ButtonStyle(
+                                                color=colors.BLACK,
+                                                padding=padding.symmetric(vertical=20)
+                                            )
+                                        ),
+                                    ],
+                                )
+                            )
                         ],
-                        spacing=16
+                        alignment=MainAxisAlignment.CENTER,
+                        vertical_alignment=CrossAxisAlignment.CENTER,
+                        spacing=50,
                     ),
                 ],
-                alignment=MainAxisAlignment.CENTER,
-                vertical_alignment=CrossAxisAlignment.CENTER,
-                spacing=50,
+                alignment=alignment.center,
             ),
             padding=padding.all(10),
-            alignment=alignment.center
         )
     )
+
 
 frame_processed = 0
 video_path_handrail = video_path.video_path_handrail
