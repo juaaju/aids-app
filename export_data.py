@@ -1,3 +1,4 @@
+import os
 import cv2
 from openpyxl.drawing.image import Image
 import shutil
@@ -26,6 +27,8 @@ def adjust_dimensions(ws):
 def export_to_excel(wb, image_folder, frame_processed):
     today = datetime.date.today()
     if frame_processed > 0:  # Check if there are frames to export
-        wb.save(f'{today}.xlsx')  # Save the workbook
+        os.makedirs('exported_data', exist_ok=True)
+        output_path = os.path.join('exported_data', f'{today}.xlsx')
+        wb.save(output_path)  # Save the workbook
         print('Data Exported')
         shutil.rmtree(image_folder)  # Clean up temporary images
