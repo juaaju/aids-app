@@ -2,7 +2,7 @@ import os
 import numpy as np
 import cv2
 from ultralytics import YOLO
-from threading import Thread
+from threading import Thread, Lock
 import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
@@ -17,6 +17,11 @@ import time
 from playsound import playsound
 # Create a new file called video_path.py and add your video/cctv rtsp url
 import video_path
+
+# Global sound lock dan timer
+sound_lock = Lock()
+last_sound_time = datetime.datetime.now()
+MIN_SOUND_INTERVAL = 2  # minimal interval dalam detik antara suara
 
 # CamStream class for video stream handling
 class CamStream:
@@ -56,6 +61,138 @@ class CamStream:
 
     def stop(self):
         self.stopped = True
+
+# Modify the OriginalStream class for better performance
+class OriginalStream:
+    def __init__(self, stream_id=0):
+        self.stream_id = stream_id
+        self.vcap = cv2.VideoCapture(self.stream_id)
+        if not self.vcap.isOpened():
+            print("[Exiting]: Error accessing stream.")
+            exit(0)
+        
+        self.grabbed, self.frame = self.vcap.read()
+        if not self.grabbed:
+            print('[Exiting] No more frames to read')
+            exit(0)
+            
+        self.stopped = True
+        self.t = Thread(target=self.update, args=())
+        self.t.daemon = True
+    
+    def start(self):
+        self.stopped = False
+        self.t.start()
+    
+    def update(self):
+        while not self.stopped:
+            self.grabbed, self.frame = self.vcap.read()
+            if not self.grabbed:
+                self.stopped = True
+                break
+            # Resize for display
+            self.frame = cv2.resize(self.frame, (416, 416))
+        self.vcap.release()
+    
+    def read(self):
+        return self.frame
+    
+    def stop(self):
+        self.stopped = True
+
+# Modify the start_detection function to handle streams separately
+async def start_detection(cam_stream, model, processed_video, original_video, feature_pick):
+    global frame_processed
+    
+    # Start original stream
+    original_stream = OriginalStream(cam_stream.stream_id)
+    original_stream.start()
+    
+    # Start original video update in a separate task
+    original_task = asyncio.create_task(update_original_video(original_stream, original_video))
+    
+    try:
+        if feature_pick == 'Handrail Detection':
+            while True:
+                if cam_stream.stopped:
+                    break
+                frame = cam_stream.read()
+                frame = cv2.resize(frame, (416, 416))
+                frame = await predict_handrail(model, frame, frame_processed)
+                frame_processed += 1
+
+                if frame_processed == 1:
+                    processed_video.src = None
+                
+                processed_video.src_base64 = save_frame(frame)
+                processed_video.update()
+
+        elif feature_pick == 'Line of Fire Detection':
+            while True:
+                if cam_stream.stopped:
+                    break
+                frame = cam_stream.read()
+                frame = cv2.resize(frame, (416, 416))
+                frame = await predict_line_of_fire(model, frame, frame_processed)
+                frame_processed += 1
+
+                if frame_processed == 1:
+                    processed_video.src = None
+                
+                processed_video.src_base64 = save_frame(frame)
+                processed_video.update()
+
+        elif feature_pick == 'Safety Equipment Detection':
+            while True:
+                if cam_stream.stopped:
+                    break
+                frame = cam_stream.read()
+                frame = cv2.resize(frame, (416, 416))
+                frame = await predict_safety_equipment(model, frame, frame_processed)
+                frame_processed += 1
+
+                if frame_processed == 1:
+                    processed_video.src = None
+                
+                processed_video.src_base64 = save_frame(frame)
+                processed_video.update()
+    
+    finally:
+        # Cleanup
+        original_stream.stop()
+        cam_stream.stop()
+        original_task.cancel()
+        cv2.destroyAllWindows()
+
+# Add a new function to update original video separately
+async def update_original_video(original_stream, original_video):
+    while not original_stream.stopped:
+        frame = original_stream.read()
+        original_video.src_base64 = save_frame(frame)
+        original_video.update()
+        await asyncio.sleep(0.001)  # Small delay to prevent overload
+
+# Buat fungsi untuk memainkan sound secara async
+def play_sound_async(sound_file):
+    global last_sound_time
+    
+    # Cek apakah sudah cukup waktu sejak suara terakhir
+    current_time = datetime.datetime.now()
+    with sound_lock:
+        if (current_time - last_sound_time).total_seconds() < MIN_SOUND_INTERVAL:
+            return  # Skip jika belum cukup waktu
+        
+        # Update waktu terakhir suara diputar
+        last_sound_time = current_time
+        
+        # Putar suara dalam thread terpisah
+        def play():
+            playsound(sound_file)
+        
+        sound_thread = Thread(target=play)
+        sound_thread.daemon = True
+        sound_thread.start()
+        print("sound diputar")
 
 async def predict_line_of_fire(model, img, frame_count, conf=0.3):
     results = model(img, conf=conf, verbose=False)
@@ -99,15 +236,11 @@ async def predict_line_of_fire(model, img, frame_count, conf=0.3):
         iou_values = [calculate_iou(tractor_coords, person) for person in person_coords]
         print(iou_values)
         if any(iou > 0 for iou in iou_values):
-            # test
             print('Area not clear')
-            playsound('alerts/alert_lof.mp3')
-            # Wifi
-            # response = requests.post(esp32_ip, data='on')
-            # Serial USB
-            # ser.write(b'on')
+            # Ganti playsound dengan versi async
+            play_sound_async('alerts/alert_lof.mp3')
+            # Tidak perlu time.sleep lagi karena sound dijalankan di thread terpisah
             export_data.write_to_excel(ws, image_folder, 'Area not clear', img, current_time, frame_count)
-            time.sleep(1)
         else:
             print('Area clear')
 
@@ -117,6 +250,7 @@ async def predict_safety_equipment(model, img, frame_count, conf=0.3):
     #crop_img = img.copy()
     #crop_pts = np.array([[450, 0], [640, 0], [640, 640], [450, 640]])
     #crop_img = crop(crop_img, crop_pts)
+    await asyncio.sleep(0.001)
     results = model(img, conf=conf, verbose=False)
     if not results:
         return img
@@ -136,7 +270,7 @@ async def predict_safety_equipment(model, img, frame_count, conf=0.3):
             lx, ux = int(x - w / 2), int(x + w / 2)
             ly, uy = int(y - h / 2), int(y + h / 2)
 
-            if name == 'no helmet':
+            if name == 'person':
                 bbox_color = (0, 0, 255)
                 is_no_helmet = True
 
@@ -144,17 +278,14 @@ async def predict_safety_equipment(model, img, frame_count, conf=0.3):
             cv2.putText(img, name + ':' + str(round(confidence, 2)), (int(bbox[0]), int(bbox[1] - 40)),
                         cv2.FONT_HERSHEY_COMPLEX, 0.5, bbox_color, 1)
 
-    if is_no_helmet:
-        print('No helmet')
-        playsound('alerts/alert_se.mp3')
-        # Wifi
-        # response = requests.post(esp32_ip, data='on')
-        # Serial USB
-        # ser.write(b'on')
-        export_data.write_to_excel(ws, image_folder, 'No helmet', img, current_time, frame_count)
-        time.sleep(1)
+        if is_no_helmet:
+            print('No helmet')
+            # Ganti playsound dengan versi async
+            play_sound_async('alerts/alert_se.mp3')
+            # Tidak perlu time.sleep lagi
+            export_data.write_to_excel(ws, image_folder, 'No helmet', img, current_time, frame_count)
 
-    return img
+        return img
 
 async def predict_handrail(model, img, frame_count, conf=0.3):
     crop_img = img.copy()
@@ -196,18 +327,15 @@ async def predict_handrail(model, img, frame_count, conf=0.3):
             else:
                 return img
 
-    if is_send:
-        # test
-        print('not holding handrail')
-        # Wifi
-        # response = requests.post(esp32_ip, data='on')
-        # Serial USB
-        ser.write(b'on')
-        # playsound('alerts/alert_hr.mp3')
-        export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
-        time.sleep(1)
-    else:
-        print('handrail')
+        if is_send:
+            print('not holding handrail')
+            ser.write(b'on')
+            # Ganti playsound dengan versi async
+            play_sound_async('alerts/alert_hr.mp3')
+            # Tidak perlu time.sleep lagi
+            export_data.write_to_excel(ws, image_folder, name, img, current_time, frame_count)
+        else:
+            print('handrail')
 
     return img
 
@@ -257,189 +385,33 @@ def save_frame(frame):
     im_b64 = base64.b64encode(im_arr)
     return im_b64.decode('utf-8')
 
-async def start_detection(cam_stream, model, video, feature_pick):
-    global frame_b64
-    global frame_processed
-    if feature_pick == 'Handrail Detection':
-        while True:
-            if cam_stream.stopped:
-                break
-            frame = cam_stream.read()
-            frame = cv2.resize(frame, (416, 416))
-            frame = await predict_handrail(model, frame, frame_processed)
-            frame_processed += 1
 
-            if frame_processed == 1:
-                video.src = None
-            video.src_base64 = save_frame(frame)
-            video.update()
-    if feature_pick == 'Line of Fire Detection':
-        while True:
-            if cam_stream.stopped:
-                break
-            frame = cam_stream.read()
-            frame = cv2.resize(frame, (416, 416))
-            frame = await predict_line_of_fire(model, frame, frame_processed)
-            frame_processed += 1
-
-            if frame_processed == 1:
-                video.src = None
-            video.src_base64 = save_frame(frame)
-            video.update()
-    if feature_pick == 'Safety Equipment Detection':
-        while True:
-            if cam_stream.stopped:
-                break
-            frame = cam_stream.read()
-            frame = cv2.resize(frame, (416, 416))
-            frame = await predict_safety_equipment(model, frame, frame_processed)
-            frame_processed += 1
-
-            if frame_processed == 1:
-                video.src = None
-            video.src_base64 = save_frame(frame)
-            video.update()
-    
-    cam_stream.stop()
-    cv2.destroyAllWindows()
-
-def main(page: Page):
-    page.title = 'AIDS'
-    page.vertical_alignment = MainAxisAlignment.CENTER
-    page.bgcolor = colors.WHITE
-
-    # Track button states
-    is_running = False  # Track if the app is running
-    is_loading = False  # Track if loading spinner should be shown
-    start_stop_button_ref = Ref[FilledButton]()
-
-    # Light indicator container
-    indicator = Container(
-        width=25,
-        height=25,
-        bgcolor=colors.RED,  # Start with red
-        border_radius=25,
-    )
-
-    # Username and password fields
-    username = TextField(label='Username', border=InputBorder.NONE, filled=True, prefix_icon=icons.PERSON)
-    password = TextField(label='Password', password=True, can_reveal_password=True, border=InputBorder.NONE, filled=True, prefix_icon=icons.LOCK)
-
-    # Loading spinner (only shown when is_loading=True)
-    loading_spinner = Row(
-        [
-            ProgressRing(stroke_width=2, color=colors.BLUE_500),
-            Text('Loading...')
-        ],
-        visible=False
-    )
-
-    result_video = Image(
-        width=400,
-        height=300,
-        border_radius=border_radius.all(16),
-        fit=ImageFit.CONTAIN,
-        src_base64=None,
-        src='images/black.png'
-    )
-
-    # Dialogs
-    connect_success = AlertDialog(title=Text("Device is connected"))
-    login_success = AlertDialog(title=Text("Logged In"))
-    login_failed = AlertDialog(title=Text("Login failed. Please try again"))
-
-    # Dropdown
-    feature_picker = Dropdown(
-        value="Handrail Detection",
-        alignment=alignment.center,
-        width=500,
-        border_color=colors.BLACK,
-        text_style=TextStyle(weight=FontWeight.W_600, color=colors.WHITE, size=16),
-        fill_color=colors.BLACK,
-        options=[
-            dropdown.Option("Handrail Detection"),
-            dropdown.Option("Line of Fire Detection"),
-            dropdown.Option("Safety Equipment Detection"),
-        ],
-        autofocus=True
-    )
-
-
-    # Event Handlers
-    def start_or_stop_app(e):
-        global detection_thread
-        nonlocal is_running
-        nonlocal is_loading
-        global ser
-        global cam_stream
-        global model
-        if is_running:
-            # Change to "Start" state
-            cam_stream.stop()
-            start_stop_button_ref.current.text = "Start"
-            start_stop_button_ref.current.style.bgcolor = colors.GREEN
-
-            if detection_thread is not None:
-                detection_thread.join()  # Ensure thread completes before moving on
-                detection_thread = None
-        else:
-            # Read feature_picker and load models and stuffs
-            if feature_picker.value == 'Handrail Detection':
-                model = YOLO('models/handrail.pt')
-                cam_stream = CamStream(video_path_handrail)
-                ser = serial.Serial('COM5', 115200, timeout=1)
-            elif feature_picker.value == 'Line of Fire Detection':
-                model = YOLO('models/line_of_fire.pt')
-                cam_stream = CamStream(video_path_line_of_fire)
-            elif feature_picker.value == 'Safety Equipment Detection':
-                model = YOLO('models/safety_equipment.pt')
-                cam_stream = CamStream(video_path_safety_equipment)
-
-            # Start main.py and video updates
-            cam_stream.start()
-            start_stop_button_ref.current.text = "Stop"
-            start_stop_button_ref.current.style.bgcolor = colors.RED
-            # is_loading = True
-            # loading_spinner.visible = True
-            page.update()
-
-            detection_thread = Thread(target=asyncio.run, args=(start_detection(cam_stream, model, result_video, feature_picker.value),))
-            detection_thread.start()
-
-            # is_loading = False
-            # loading_spinner.visible = False
-
-        start_stop_button_ref.current.update()
-        page.update()
-        is_running = not is_running
-
-    async def feedback_test(e):
-        # response = requests.post(esp32_ip, data='on')
-        ser.write(b'on')
-        page.open(connect_success)
-        indicator.bgcolor = colors.GREEN  # Change indicator color to green
-        indicator.update()
-        page.update()
-
-    def login(e):
-        if username.value == 'admin' and password.value == '123poleng':
-            page.open(login_success)
-            start_stop_button_ref.current.disabled = False  # Enable the Start/Stop button
-            start_stop_button_ref.current.update()
-        else:
-            page.open(login_failed)
-            password.value = ""
-            password.update()
-
-        page.update()
-
-    # Layout setup
-    page.add(
-        Container(
-            alignment=alignment.center,
+class LoginView(View):
+    def __init__(self, page: Page, on_login_success):
+        super().__init__(route="/login")
+        self.page = page
+        self.on_login_success = on_login_success
+        
+    def build(self):
+        self.username = TextField(
+            label='Username',
+            border=InputBorder.NONE,
+            filled=True,
+            prefix_icon=Icons.PERSON
+        )
+        self.password = TextField(
+            label='Password',
+            password=True,
+            can_reveal_password=True,
+            border=InputBorder.NONE,
+            filled=True,
+            prefix_icon=Icons.LOCK
+        )
+        
+        return Container(
+            bgcolor=colors.WHITE,
             content=Column(
                 [
-                    # Header Section
                     Container(
                         alignment=alignment.center,
                         margin=margin.only(bottom=16),
@@ -447,125 +419,262 @@ def main(page: Page):
                             [
                                 Image(src='images/pertamina.png', width=100),
                                 Text(
-                                    'AIDS',
+                                    'A I LOPE U',
                                     style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
                                 ),
                             ],
                             alignment=CrossAxisAlignment.CENTER
                         )
                     ),
-                    # Main Row: Video Section (Left) and Input Section (Right)
+                    Container(
+                        width=400,
+                        padding=padding.all(10),
+                        content=Column(
+                            [
+                                Text(
+                                    'Please login to start the app',
+                                    style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16),
+                                    text_align=TextAlign.CENTER,  # Center the text
+                                ),
+                                Container(  # Wrap TextField in Container for width control
+                                    width=300,
+                                    content=self.username,
+                                ),
+                                Container(  # Wrap TextField in Container for width control
+                                    width=300,
+                                    content=self.password,
+                                ),
+                                Container(  # Wrap Button in Container for width control
+                                    width=300,
+                                    content=FilledButton(
+                                        'Login',
+                                        on_click=self.login,
+                                        style=ButtonStyle(
+                                            color=colors.WHITE,
+                                            bgcolor=colors.RED,
+                                            padding=padding.symmetric(vertical=20)
+                                        )
+                                    )
+                                )
+                            ],
+                            horizontal_alignment=CrossAxisAlignment.CENTER,  # Center horizontally
+                            alignment=MainAxisAlignment.CENTER,  # Center vertically
+                            spacing=20
+                        )
+                    )
+                ],
+                horizontal_alignment=CrossAxisAlignment.CENTER,  # Center all content horizontally
+                alignment=MainAxisAlignment.CENTER,  # Center all content vertically
+            ),
+            expand=True,
+            alignment=alignment.center  # Center the main container
+        )
+
+    def login(self, e):
+        if self.username.value == 'admin' and self.password.value == 'admin':
+            self.on_login_success()
+        else:
+            self.page.dialog = AlertDialog(title=Text("Login failed. Please try again"))
+            self.page.dialog.open = True
+            self.password.value = ""
+            self.password.update()
+            self.page.update()
+
+class MainView(View):
+    def __init__(self, page: Page):
+        super().__init__(route="/main")
+        self.page = page
+        self.is_running = False
+        self.setup_controls()
+
+    def setup_controls(self):
+        self.result_video = Image(
+            width=400,
+            height=300,
+            border_radius=border_radius.all(16),
+            fit=ImageFit.CONTAIN,
+            src_base64=None,
+            src='images/black.png'
+        )
+
+        self.original_video = Image(
+            width=400,
+            height=300,
+            border_radius=border_radius.all(16),
+            fit=ImageFit.CONTAIN,
+            src_base64=None,
+            src='images/black.png'
+        )
+
+        self.feature_picker = Dropdown(
+            value="Handrail Detection",
+            alignment=alignment.center,
+            width=500,
+            border_color=colors.GREY,
+            text_style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16),
+            fill_color=colors.GREY_200,
+            options=[
+                dropdown.Option("Handrail Detection"),
+                dropdown.Option("Line of Fire Detection"),
+                dropdown.Option("Safety Equipment Detection"),
+            ],
+            autofocus=True
+        )
+
+        self.button = FilledButton(
+            'Start',
+            on_click=self.start_or_stop_app,
+            style=ButtonStyle(
+                color=colors.WHITE,
+                bgcolor=colors.GREEN,
+                padding=padding.symmetric(vertical=20)
+            )
+        )
+        # Kemudian bungkus dalam container
+        self.start_stop_button = Container(
+            width=500,
+            content=self.button
+        )
+        
+
+    def build(self):
+        return Container(
+            bgcolor=colors.WHITE,
+            content=Column(
+                [
+                    Container(
+                        alignment=alignment.center,
+                        margin=margin.only(bottom=16),
+                        content=Column(
+                            [
+                                Image(src='images/pertamina.png', width=100),
+                                Text(
+                                    'A I LOPE U',
+                                    style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
+                                ),
+                            ],
+                            horizontal_alignment=CrossAxisAlignment.CENTER,
+                            alignment=MainAxisAlignment.CENTER,
+                        )
+                    ),
                     Row(
                         [
-                            # Video Section
-                            Container(
-                                width=400,
-                                content=Column(
-                                    [
-                                        Container(
-                                            alignment=alignment.center,
-                                            border_radius=border_radius.all(20),
-                                            bgcolor=colors.BLACK,
-                                            width=400,
-                                            height=300,
-                                            content=result_video
-                                        ),
-                                        Row(
-                                            [
-                                                OutlinedButton(
-                                                    'Feedback Test',
-                                                    on_long_press=feedback_test,
-                                                    adaptive=True,
-                                                    width=150,
-                                                    style=ButtonStyle(
-                                                        color=colors.BLACK,
-                                                        padding=padding.symmetric(vertical=20)
-                                                    )
-                                                ),
-                                                indicator  # Light indicator container
-                                            ],
-                                            alignment=MainAxisAlignment.SPACE_BETWEEN,
-                                            width=400
-                                        ),
-                                        loading_spinner  # Show loading spinner if is_loading=True
-                                    ],
-                                    spacing=16
-                                ),
-                            ),
-                            # Input Fields Section
-                            Container(
-                                width=400,
-                                padding=padding.all(10),
-                                alignment=alignment.center,
-                                content=Column(
-                                    [
-                                        Container(
-                                            margin=margin.only(bottom=16),
-                                            content=Column(
-                                                [
-                                                    Text(
-                                                        'Please login to start the app',
-                                                        style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
-                                                    ),
-                                                    username,
-                                                    password,
-                                                    FilledButton(
-                                                        'Login',
-                                                        on_click=login,
-                                                        adaptive=True,
-                                                        width=500,
-                                                        style=ButtonStyle(
-                                                            color=colors.WHITE,
-                                                            bgcolor=colors.RED,
-                                                            padding=padding.symmetric(vertical=20)
-                                                        )
-                                                    ),
-                                                ]
-                                            )
-                                        ),
-                                        Text(
-                                            'Choose what you want to detect',
-                                            style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
-                                        ),
-                                        feature_picker,
-                                        FilledButton(
-                                            'Start',
-                                            on_click=start_or_stop_app,
-                                            adaptive=True,
-                                            ref=start_stop_button_ref,
-                                            width=500,
-                                            disabled=True,  # Initially disabled
-                                            style=ButtonStyle(
-                                                color=colors.WHITE,
-                                                bgcolor=colors.GREEN,
-                                                padding=padding.symmetric(vertical=20)
-                                            )
-                                        ),
-                                        OutlinedButton(
-                                            'Export Data',
-                                            on_click=lambda e: export_data.export_to_excel(wb, image_folder, frame_processed),
-                                            adaptive=True,
-                                            width=500,
-                                            style=ButtonStyle(
-                                                color=colors.BLACK,
-                                                padding=padding.symmetric(vertical=20)
-                                            )
-                                        ),
-                                    ],
-                                )
-                            )
+                            self.create_video_container("Deteksi", self.result_video),
+                            self.create_video_container("Video Original", self.original_video),
+                            self.create_control_container(),
                         ],
                         alignment=MainAxisAlignment.CENTER,
-                        vertical_alignment=CrossAxisAlignment.CENTER,
+                        vertical_alignment=CrossAxisAlignment.START,
                         spacing=50,
                     ),
                 ],
-                alignment=alignment.center,
+                horizontal_alignment=CrossAxisAlignment.CENTER,
+                alignment=MainAxisAlignment.CENTER,
             ),
             padding=padding.all(10),
+            expand=True,
+            alignment=alignment.center,
         )
-    )
 
+    def create_video_container(self, title, video):
+        return Container(
+            width=400,
+            content=Column(
+                [
+                    Text(title, style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
+                    Container(
+                        alignment=alignment.center,
+                        border_radius=border_radius.all(20),
+                        bgcolor=colors.BLACK,
+                        width=400,
+                        height=300,
+                        content=video
+                    ),
+                ],
+                spacing=16
+            ),
+        )
+
+    def create_control_container(self):
+        return Container(
+            width=400,
+            padding=padding.all(10),
+            alignment=alignment.center,
+            content=Column(
+                [
+                    Text(
+                        'Choose what you want to detect',
+                        style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
+                    ),
+                    self.feature_picker,
+                    self.start_stop_button,
+                    OutlinedButton(
+                        'Export Data',
+                        on_click=lambda e: export_data.export_to_excel(wb, image_folder, frame_processed),
+                        width=500,
+                        style=ButtonStyle(
+                            color=colors.BLACK,
+                            padding=padding.symmetric(vertical=20)
+                        )
+                    ),
+                ],
+            )
+        )
+
+    def start_or_stop_app(self, e):
+        global detection_thread, cam_stream, model, ser
+        if self.is_running:
+            cam_stream.stop()
+            self.button.text = "Start"
+            self.button.style.bgcolor = colors.GREEN
+
+            if detection_thread is not None:
+                detection_thread.join()
+                detection_thread = None
+        else:
+            if self.feature_picker.value == 'Handrail Detection':
+                model = YOLO('models/handrail.pt')
+                cam_stream = CamStream(video_path.video_path_handrail)
+                ser = serial.Serial('COM5', 115200, timeout=1)
+            elif self.feature_picker.value == 'Line of Fire Detection':
+                model = YOLO('models/line_of_fire.pt')
+                cam_stream = CamStream(video_path.video_path_line_of_fire)
+            elif self.feature_picker.value == 'Safety Equipment Detection':
+                model = YOLO('models/yolo11n.pt')
+                cam_stream = CamStream(video_path.video_path_safety_equipment)
+
+            cam_stream.start()
+            self.button.text = "Stop"
+            self.button.style.bgcolor = colors.RED
+            self.page.update()
+
+            detection_thread = Thread(
+                target=asyncio.run,
+                args=(start_detection(cam_stream, model, self.result_video, self.original_video, self.feature_picker.value),)
+            )
+            detection_thread.start()
+
+        self.start_stop_button.update()
+        self.is_running = not self.is_running
+
+def main(page: Page):
+    page.title = 'A I LOPE U'
+    page.padding = 0  # Remove default padding
+    page.spacing = 0  # Remove default spacing
+    page.bgcolor = colors.WHITE
+    page.window_bgcolor = colors.WHITE  # Set window background color
+    page.theme_mode = ThemeMode.LIGHT
+    
+    def route_change(route):
+        page.views.clear()
+        if page.route == "/login":
+            page.views.append(LoginView(page, lambda: page.go("/main")))
+        elif page.route == "/main":
+            page.views.append(MainView(page))
+        page.update()
+
+    page.on_route_change = route_change
+    page.go("/login")
 
 frame_processed = 0
 video_path_handrail = video_path.video_path_handrail
@@ -573,19 +682,20 @@ video_path_line_of_fire = video_path.video_path_line_of_fire
 video_path_safety_equipment = video_path.video_path_safety_equipment
 esp32_ip = "http://192.168.100.163/send-data"
 
-model = None
-cam_stream = None
-
-wb = Workbook()
-ws = wb.active
-
-image_folder = "temp_images"
-if not os.path.exists(image_folder):
-    os.makedirs(image_folder)
-
-global ser
-
 if __name__ == "__main__":
+    # Initialize global variables
+    frame_processed = 0
+    detection_thread = None
+    model = None
+    cam_stream = None
+    wb = Workbook()
+    ws = wb.active
+    
+    image_folder = "temp_images"
+    if not os.path.exists(image_folder):
+        os.makedirs(image_folder)
+
     app(main)
+    
     if os.path.exists(image_folder):
         shutil.rmtree(image_folder)
