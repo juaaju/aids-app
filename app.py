@@ -19,16 +19,9 @@ from components.login import LoginView
 from core.videostream import OriginalStream, CamStream
 from core.utils import crop, calculate_iou, calculate_red_pixel_std, save_frame, play_sound_async
 
-# Modify the start_detection function to handle streams separately
-async def start_detection(cam_stream, model, processed_video, original_video, feature_pick):
+async def start_detection(cam_stream, model, processed_video, feature_pick):
     global frame_processed
-    
-    # Start original stream
-    original_stream = OriginalStream(cam_stream.stream_id)
-    original_stream.start()
-    
-    # Start original video update in a separate task
-    original_task = asyncio.create_task(update_original_video(original_stream, original_video))
+    frame_processed = 0  # Reset counter when starting detection
     
     try:
         if feature_pick == 'Handrail Detection':
@@ -78,9 +71,7 @@ async def start_detection(cam_stream, model, processed_video, original_video, fe
     
     finally:
         # Cleanup
-        original_stream.stop()
         cam_stream.stop()
-        original_task.cancel()
         cv2.destroyAllWindows()
 
 # Add a new function to update original video separately
@@ -237,7 +228,8 @@ class MainView(View):
     def __init__(self, page: Page):
         super().__init__(route="/main")
         self.page = page
-        self.is_running = False
+        self.is_detection_running = False
+        self.is_original_running = False
         self.setup_controls()
         self.system_monitor = SystemMonitor()
 
@@ -260,6 +252,26 @@ class MainView(View):
             src='images/black.png'
         )
 
+        self.detection_button = FilledButton(
+            'Start Detection',
+            on_click=self.toggle_detection,
+            style=ButtonStyle(
+                color=colors.WHITE,
+                bgcolor=colors.GREEN,
+                padding=padding.symmetric(vertical=20)
+            )
+        )
+
+        self.original_button = FilledButton(
+            'Start Original',
+            on_click=self.toggle_original,
+            style=ButtonStyle(
+                color=colors.WHITE,
+                bgcolor=colors.GREEN,
+                padding=padding.symmetric(vertical=20)
+            )
+        )
+
         self.feature_picker = Dropdown(
             value="Handrail Detection",
             alignment=alignment.center,
@@ -275,21 +287,28 @@ class MainView(View):
             autofocus=True
         )
 
-        self.button = FilledButton(
-            'Start',
-            on_click=self.start_or_stop_app,
-            style=ButtonStyle(
-                color=colors.WHITE,
-                bgcolor=colors.GREEN,
-                padding=padding.symmetric(vertical=20)
-            )
+    def create_video_container(self, title, video, control_button):
+        return Container(
+            width=400,
+            content=Column(
+                [
+                    Text(title, style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
+                    Container(
+                        alignment=alignment.center,
+                        border_radius=border_radius.all(20),
+                        bgcolor=colors.BLACK,
+                        width=400,
+                        height=300,
+                        content=video
+                    ),
+                    Container(
+                        width=400,
+                        content=control_button
+                    )
+                ],
+                spacing=16
+            ),
         )
-        # Kemudian bungkus dalam container
-        self.start_stop_button = Container(
-            width=500,
-            content=self.button
-        )
-        
 
     def build(self):
         return Container(
@@ -313,8 +332,8 @@ class MainView(View):
                     ),
                     Row(
                         [
-                            self.create_video_container("Deteksi", self.result_video),
-                            self.create_video_container("Video Original", self.original_video),
+                            self.create_video_container("Deteksi", self.result_video, self.detection_button),
+                            self.create_video_container("Video Original", self.original_video, self.original_button),
                             self.create_control_container(),
                         ],
                         alignment=MainAxisAlignment.CENTER,
@@ -331,25 +350,6 @@ class MainView(View):
             alignment=alignment.center,
         )
 
-    def create_video_container(self, title, video):
-        return Container(
-            width=400,
-            content=Column(
-                [
-                    Text(title, style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
-                    Container(
-                        alignment=alignment.center,
-                        border_radius=border_radius.all(20),
-                        bgcolor=colors.BLACK,
-                        width=400,
-                        height=300,
-                        content=video
-                    ),
-                ],
-                spacing=16
-            ),
-        )
-
     def create_control_container(self):
         return Container(
             width=400,
@@ -362,7 +362,6 @@ class MainView(View):
                         style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)
                     ),
                     self.feature_picker,
-                    self.start_stop_button,
                     OutlinedButton(
                         'Export Data',
                         on_click=lambda e: export_data.export_to_excel(wb, image_folder, frame_processed),
@@ -376,17 +375,29 @@ class MainView(View):
             )
         )
 
-    def start_or_stop_app(self, e):
+    def toggle_detection(self, e):
         global detection_thread, cam_stream, model, ser
-        if self.is_running:
-            cam_stream.stop()
-            self.button.text = "Start"
-            self.button.style.bgcolor = colors.GREEN
-
+        if self.is_detection_running:
+            # Stop stream first
+            if cam_stream:
+                cam_stream.stop()
+            
+            # Reset button appearance
+            self.detection_button.text = "Start Detection"
+            self.detection_button.style.bgcolor = colors.GREEN
+            
+            # Wait for thread to complete
             if detection_thread is not None:
                 detection_thread.join()
                 detection_thread = None
+            
+            # Reset video display after thread is done
+            self.result_video.src_base64 = None
+            self.result_video.src = 'images/black.png'
+            self.result_video.update()
+            self.page.update()
         else:
+            # Start new detection
             if self.feature_picker.value == 'Handrail Detection':
                 model = YOLO('models/handrail.pt')
                 cam_stream = CamStream(video_path.video_path_handrail)
@@ -399,18 +410,47 @@ class MainView(View):
                 cam_stream = CamStream(video_path.video_path_safety_equipment)
 
             cam_stream.start()
-            self.button.text = "Stop"
-            self.button.style.bgcolor = colors.RED
+            self.detection_button.text = "Stop Detection"
+            self.detection_button.style.bgcolor = colors.RED
             self.page.update()
 
             detection_thread = Thread(
                 target=asyncio.run,
-                args=(start_detection(cam_stream, model, self.result_video, self.original_video, self.feature_picker.value),)
+                args=(start_detection(cam_stream, model, self.result_video, self.feature_picker.value),)
             )
             detection_thread.start()
 
-        self.start_stop_button.update()
-        self.is_running = not self.is_running
+        self.is_detection_running = not self.is_detection_running
+        self.detection_button.update()
+
+    def toggle_original(self, e):
+        global original_stream
+        if self.is_original_running:
+            if hasattr(self, 'original_stream'):
+                self.original_stream.stop()
+            self.original_button.text = "Start Original"
+            self.original_button.style.bgcolor = colors.GREEN
+            # Reset video to black background
+            self.original_video.src = 'images/black.png'
+            self.original_video.src_base64 = None
+            self.original_video.update()
+        else:
+            self.original_stream = OriginalStream(video_path.video_path_handrail)
+            self.original_stream.start()
+            self.original_button.text = "Stop Original"
+            self.original_button.style.bgcolor = colors.RED
+            
+            async def update_original():
+                while not self.original_stream.stopped:
+                    frame = self.original_stream.read()
+                    self.original_video.src_base64 = save_frame(frame)
+                    self.original_video.update()
+                    await asyncio.sleep(0.001)
+
+            Thread(target=asyncio.run, args=(update_original(),)).start()
+
+        self.is_original_running = not self.is_original_running
+        self.original_button.update()
 
 def main(page: Page):
     page.title = 'A I LOPE U'
@@ -419,7 +459,7 @@ def main(page: Page):
     page.bgcolor = colors.WHITE
     page.window_bgcolor = colors.WHITE  # Set window background color
     page.theme_mode = ThemeMode.LIGHT
-    
+
     def route_change(route):
         page.views.clear()
         if page.route == "/login":
