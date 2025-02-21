@@ -2,103 +2,22 @@ import os
 import numpy as np
 import cv2
 from ultralytics import YOLO
-from threading import Thread, Lock
+from threading import Thread
 import datetime
 from openpyxl.drawing.image import Image
 from openpyxl import Workbook
 import shutil
 from flet import *
-import base64
 import asyncio
-import requests
-import export_data
+import core.export_data as export_data
 import serial
-import time
-from playsound import playsound
 # Create a new file called video_path.py and add your video/cctv rtsp url
 import video_path
-
-# Global sound lock dan timer
-sound_lock = Lock()
-last_sound_time = datetime.datetime.now()
-MIN_SOUND_INTERVAL = 2  # minimal interval dalam detik antara suara
-
-# CamStream class for video stream handling
-class CamStream:
-    def __init__(self, stream_id=0):
-        self.stream_id = stream_id
-        self.vcap = cv2.VideoCapture(self.stream_id)
-        if not self.vcap.isOpened():
-            print("[Exiting]: Error accessing stream.")
-            exit(0)
-
-        fps_input_stream = int(self.vcap.get(5))
-        print(f"FPS of hardware/input stream: {fps_input_stream}")
-
-        self.grabbed, self.frame = self.vcap.read()
-        if not self.grabbed:
-            print('[Exiting] No more frames to read')
-            exit(0)
-
-        self.stopped = True
-        self.t = Thread(target=self.update, args=())
-        self.t.daemon = True
-
-    def start(self):
-        self.stopped = False
-        self.t.start()
-
-    def update(self):
-        while not self.stopped:
-            self.grabbed, self.frame = self.vcap.read()
-            if not self.grabbed:
-                self.stopped = True
-                break
-        self.vcap.release()
-
-    def read(self):
-        return self.frame
-
-    def stop(self):
-        self.stopped = True
-
-# Modify the OriginalStream class for better performance
-class OriginalStream:
-    def __init__(self, stream_id=0):
-        self.stream_id = stream_id
-        self.vcap = cv2.VideoCapture(self.stream_id)
-        if not self.vcap.isOpened():
-            print("[Exiting]: Error accessing stream.")
-            exit(0)
-        
-        self.grabbed, self.frame = self.vcap.read()
-        if not self.grabbed:
-            print('[Exiting] No more frames to read')
-            exit(0)
-            
-        self.stopped = True
-        self.t = Thread(target=self.update, args=())
-        self.t.daemon = True
-    
-    def start(self):
-        self.stopped = False
-        self.t.start()
-    
-    def update(self):
-        while not self.stopped:
-            self.grabbed, self.frame = self.vcap.read()
-            if not self.grabbed:
-                self.stopped = True
-                break
-            # Resize for display
-            self.frame = cv2.resize(self.frame, (416, 416))
-        self.vcap.release()
-    
-    def read(self):
-        return self.frame
-    
-    def stop(self):
-        self.stopped = True
+#core dan komponen terpisah
+from components.system_monitor import SystemMonitor
+from components.login import LoginView
+from core.videostream import OriginalStream, CamStream
+from core.utils import crop, calculate_iou, calculate_red_pixel_std, save_frame, play_sound_async
 
 # Modify the start_detection function to handle streams separately
 async def start_detection(cam_stream, model, processed_video, original_video, feature_pick):
@@ -172,28 +91,6 @@ async def update_original_video(original_stream, original_video):
         original_video.update()
         await asyncio.sleep(0.001)  # Small delay to prevent overload
 
-# Buat fungsi untuk memainkan sound secara async
-def play_sound_async(sound_file):
-    global last_sound_time
-    
-    # Cek apakah sudah cukup waktu sejak suara terakhir
-    current_time = datetime.datetime.now()
-    with sound_lock:
-        if (current_time - last_sound_time).total_seconds() < MIN_SOUND_INTERVAL:
-            return  # Skip jika belum cukup waktu
-        
-        # Update waktu terakhir suara diputar
-        last_sound_time = current_time
-        
-        # Putar suara dalam thread terpisah
-        def play():
-            playsound(sound_file)
-        
-        sound_thread = Thread(target=play)
-        sound_thread.daemon = True
-        sound_thread.start()
-        print("sound diputar")
-
 async def predict_line_of_fire(model, img, frame_count, conf=0.3):
     results = model(img, conf=conf, verbose=False)
     if not results:
@@ -247,9 +144,6 @@ async def predict_line_of_fire(model, img, frame_count, conf=0.3):
     return img
 
 async def predict_safety_equipment(model, img, frame_count, conf=0.3):
-    #crop_img = img.copy()
-    #crop_pts = np.array([[450, 0], [640, 0], [640, 640], [450, 640]])
-    #crop_img = crop(crop_img, crop_pts)
     await asyncio.sleep(0.001)
     results = model(img, conf=conf, verbose=False)
     if not results:
@@ -339,153 +233,13 @@ async def predict_handrail(model, img, frame_count, conf=0.3):
 
     return img
 
-def crop(frame, pts1, pts2):
-
-    # Create a mask of the same size as the image, initialized with zeros (black)
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-
-   # Fill the two polygons on the mask with white (255)
-    cv2.fillPoly(mask, [pts1], 255)
-    cv2.fillPoly(mask, [pts2], 255)
-
-    # Apply the mask to the image
-    masked_image = cv2.bitwise_and(frame, frame, mask=mask)
-
-    return masked_image
-
-def calculate_iou(coords1, coords2):
-    print(coords1)
-    print(coords2)
-    x1, y1 = max(coords1[0], coords2[0]), max(coords1[2], coords2[2])
-    x2, y2 = min(coords1[1], coords2[1]), min(coords1[3], coords2[3])
-
-    inter_width, inter_height = max(0, x2 - x1), max(0, y2 - y1)
-    inter_area = inter_width * inter_height
-
-    area1 = (coords1[1] - coords1[0]) * (coords1[3] - coords1[2])
-    area2 = (coords2[1] - coords2[0]) * (coords2[3] - coords2[2])
-
-    union_area = area1 + area2 - inter_area
-    print(union_area)
-    iou = inter_area/union_area if union_area!=0 else 0
-    return iou
-
-def calculate_red_pixel_std(frame):
-    # Extract the red channel (assuming BGR format)
-    red_channel = frame[:, :, 2]
-    
-    # Filter out zero pixels (those not in the masked area)
-    red_values = red_channel[red_channel > 0]
-    
-    # Calculate the standard deviation of the red channel pixels
-    return np.std(red_values)
-
-def save_frame(frame):
-    _, im_arr = cv2.imencode('.jpg', frame)
-    im_b64 = base64.b64encode(im_arr)
-    return im_b64.decode('utf-8')
-
-
-class LoginView(View):
-    def __init__(self, page: Page, on_login_success):
-        super().__init__(route="/login")
-        self.page = page
-        self.on_login_success = on_login_success
-        
-    def build(self):
-        self.username = TextField(
-            label='Username',
-            border=InputBorder.NONE,
-            filled=True,
-            prefix_icon=Icons.PERSON
-        )
-        self.password = TextField(
-            label='Password',
-            password=True,
-            can_reveal_password=True,
-            border=InputBorder.NONE,
-            filled=True,
-            prefix_icon=Icons.LOCK
-        )
-        
-        return Container(
-            bgcolor=colors.WHITE,
-            content=Column(
-                [
-                    Container(
-                        alignment=alignment.center,
-                        margin=margin.only(bottom=16),
-                        content=Column(
-                            [
-                                Image(src='images/pertamina.png', width=100),
-                                Text(
-                                    'A I LOPE U',
-                                    style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
-                                ),
-                            ],
-                            alignment=CrossAxisAlignment.CENTER
-                        )
-                    ),
-                    Container(
-                        width=400,
-                        padding=padding.all(10),
-                        content=Column(
-                            [
-                                Text(
-                                    'Please login to start the app',
-                                    style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16),
-                                    text_align=TextAlign.CENTER,  # Center the text
-                                ),
-                                Container(  # Wrap TextField in Container for width control
-                                    width=300,
-                                    content=self.username,
-                                ),
-                                Container(  # Wrap TextField in Container for width control
-                                    width=300,
-                                    content=self.password,
-                                ),
-                                Container(  # Wrap Button in Container for width control
-                                    width=300,
-                                    content=FilledButton(
-                                        'Login',
-                                        on_click=self.login,
-                                        style=ButtonStyle(
-                                            color=colors.WHITE,
-                                            bgcolor=colors.RED,
-                                            padding=padding.symmetric(vertical=20)
-                                        )
-                                    )
-                                )
-                            ],
-                            horizontal_alignment=CrossAxisAlignment.CENTER,  # Center horizontally
-                            alignment=MainAxisAlignment.CENTER,  # Center vertically
-                            spacing=20
-                        )
-                    )
-                ],
-                horizontal_alignment=CrossAxisAlignment.CENTER,  # Center all content horizontally
-                alignment=MainAxisAlignment.CENTER,  # Center all content vertically
-            ),
-            expand=True,
-            alignment=alignment.center  # Center the main container
-        )
-
-    def login(self, e):
-        if self.username.value == 'admin' and self.password.value == 'admin':
-            self.on_login_success()
-        else:
-            self.page.dialog = AlertDialog(title=Text("Login failed. Please try again"))
-            self.page.dialog.open = True
-            self.password.value = ""
-            self.password.update()
-            self.page.update()
-
 class MainView(View):
     def __init__(self, page: Page):
         super().__init__(route="/main")
         self.page = page
         self.is_running = False
         self.setup_controls()
+        self.system_monitor = SystemMonitor()
 
     def setup_controls(self):
         self.result_video = Image(
@@ -567,6 +321,7 @@ class MainView(View):
                         vertical_alignment=CrossAxisAlignment.START,
                         spacing=50,
                     ),
+                    self.system_monitor,
                 ],
                 horizontal_alignment=CrossAxisAlignment.CENTER,
                 alignment=MainAxisAlignment.CENTER,
