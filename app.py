@@ -284,8 +284,49 @@ class MainView(View):
                 dropdown.Option("Line of Fire Detection"),
                 dropdown.Option("Safety Equipment Detection"),
             ],
+            on_change=self.handle_dropdown_change,  # Add dropdown change handler
             autofocus=True
         )
+
+    def handle_dropdown_change(self, e):
+        # Stop detection if running
+        if self.is_detection_running:
+            self.stop_detection()
+            
+        # Stop original stream if running
+        if self.is_original_running:
+            self.stop_original()
+            
+        self.page.update()
+
+    def stop_detection(self):
+        global detection_thread, cam_stream
+        if cam_stream:
+            cam_stream.stop()
+        
+        self.detection_button.text = "Start Detection"
+        self.detection_button.style.bgcolor = colors.GREEN
+        
+        if detection_thread is not None:
+            detection_thread.join()
+            detection_thread = None
+        
+        self.result_video.src_base64 = None
+        self.result_video.src = 'images/black.png'
+        self.result_video.update()
+        self.is_detection_running = False
+        self.detection_button.update()
+
+    def stop_original(self):
+        if hasattr(self, 'original_stream'):
+            self.original_stream.stop()
+        self.original_button.text = "Start Original"
+        self.original_button.style.bgcolor = colors.GREEN
+        self.original_video.src = 'images/black.png'
+        self.original_video.src_base64 = None
+        self.original_video.update()
+        self.is_original_running = False
+        self.original_button.update()
 
     def create_video_container(self, title, video, control_button):
         return Container(
@@ -378,24 +419,7 @@ class MainView(View):
     def toggle_detection(self, e):
         global detection_thread, cam_stream, model, ser
         if self.is_detection_running:
-            # Stop stream first
-            if cam_stream:
-                cam_stream.stop()
-            
-            # Reset button appearance
-            self.detection_button.text = "Start Detection"
-            self.detection_button.style.bgcolor = colors.GREEN
-            
-            # Wait for thread to complete
-            if detection_thread is not None:
-                detection_thread.join()
-                detection_thread = None
-            
-            # Reset video display after thread is done
-            self.result_video.src_base64 = None
-            self.result_video.src = 'images/black.png'
-            self.result_video.update()
-            self.page.update()
+            self.stop_detection()
         else:
             # Start new detection
             if self.feature_picker.value == 'Handrail Detection':
@@ -419,23 +443,22 @@ class MainView(View):
                 args=(start_detection(cam_stream, model, self.result_video, self.feature_picker.value),)
             )
             detection_thread.start()
-
-        self.is_detection_running = not self.is_detection_running
-        self.detection_button.update()
+            self.is_detection_running = True
+            self.detection_button.update()
 
     def toggle_original(self, e):
-        global original_stream
         if self.is_original_running:
-            if hasattr(self, 'original_stream'):
-                self.original_stream.stop()
-            self.original_button.text = "Start Original"
-            self.original_button.style.bgcolor = colors.GREEN
-            # Reset video to black background
-            self.original_video.src = 'images/black.png'
-            self.original_video.src_base64 = None
-            self.original_video.update()
+            self.stop_original()
         else:
-            self.original_stream = OriginalStream(video_path.video_path_handrail)
+            # Select video path based on feature selection
+            if self.feature_picker.value == 'Handrail Detection':
+                video_path_selected = video_path.video_path_handrail
+            elif self.feature_picker.value == 'Line of Fire Detection':
+                video_path_selected = video_path.video_path_line_of_fire
+            elif self.feature_picker.value == 'Safety Equipment Detection':
+                video_path_selected = video_path.video_path_safety_equipment
+            
+            self.original_stream = OriginalStream(video_path_selected)
             self.original_stream.start()
             self.original_button.text = "Stop Original"
             self.original_button.style.bgcolor = colors.RED
@@ -448,9 +471,8 @@ class MainView(View):
                     await asyncio.sleep(0.001)
 
             Thread(target=asyncio.run, args=(update_original(),)).start()
-
-        self.is_original_running = not self.is_original_running
-        self.original_button.update()
+            self.is_original_running = True
+            self.original_button.update()
 
 def main(page: Page):
     page.title = 'A I LOPE U'
@@ -471,10 +493,6 @@ def main(page: Page):
     page.on_route_change = route_change
     page.go("/login")
 
-frame_processed = 0
-video_path_handrail = video_path.video_path_handrail
-video_path_line_of_fire = video_path.video_path_line_of_fire
-video_path_safety_equipment = video_path.video_path_safety_equipment
 esp32_ip = "http://192.168.100.163/send-data"
 
 if __name__ == "__main__":
