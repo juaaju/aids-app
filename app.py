@@ -229,14 +229,17 @@ class MainView(View):
         super().__init__(route="/main")
         self.page = page
         self.is_detection_running = False
+        self.is_detection2_running = False
         self.is_original_running = False
+        self.is_original2_running = False
         self.setup_controls()
         self.system_monitor = SystemMonitor()
 
     def setup_controls(self):
+        # First set of videos
         self.result_video = Image(
-            width=400,
-            height=300,
+            width=300,  # Updated width
+            height=225,  # Updated height
             border_radius=border_radius.all(16),
             fit=ImageFit.CONTAIN,
             src_base64=None,
@@ -244,14 +247,33 @@ class MainView(View):
         )
 
         self.original_video = Image(
-            width=400,
-            height=300,
+            width=300,  # Updated width
+            height=225,  # Updated height
             border_radius=border_radius.all(16),
             fit=ImageFit.CONTAIN,
             src_base64=None,
             src='images/black.png'
         )
 
+        self.result_video2 = Image(
+            width=300,  # Updated width
+            height=225,  # Updated height
+            border_radius=border_radius.all(16),
+            fit=ImageFit.CONTAIN,
+            src_base64=None,
+            src='images/black.png'
+        )
+
+        self.original_video2 = Image(
+            width=300,  # Updated width
+            height=225,  # Updated height
+            border_radius=border_radius.all(16),
+            fit=ImageFit.CONTAIN,
+            src_base64=None,
+            src='images/black.png'
+        )
+
+        # First set of buttons
         self.detection_button = FilledButton(
             'Start Detection',
             on_click=self.toggle_detection,
@@ -272,6 +294,29 @@ class MainView(View):
             )
         )
 
+        # Second set of buttons
+        self.detection_button2 = FilledButton(
+            'Start Detection 2',
+            on_click=self.toggle_detection2,
+            style=ButtonStyle(
+                color=colors.WHITE,
+                bgcolor=colors.GREEN,
+                padding=padding.symmetric(vertical=20)
+            ),
+            visible=False
+        )
+
+        self.original_button2 = FilledButton(
+            'Start Original 2',
+            on_click=self.toggle_original2,
+            style=ButtonStyle(
+                color=colors.WHITE,
+                bgcolor=colors.GREEN,
+                padding=padding.symmetric(vertical=20)
+            ),
+            visible=False
+        )
+
         self.feature_picker = Dropdown(
             value="Handrail Detection",
             alignment=alignment.center,
@@ -284,19 +329,193 @@ class MainView(View):
                 dropdown.Option("Line of Fire Detection"),
                 dropdown.Option("Safety Equipment Detection"),
             ],
-            on_change=self.handle_dropdown_change,  # Add dropdown change handler
+            on_change=self.handle_dropdown_change,
             autofocus=True
         )
 
+        # Container for second set of videos
+        self.second_video_row = Row(
+            [
+                self.create_video_container("Deteksi 2", self.result_video2, self.detection_button2),
+                self.create_video_container("Video Original 2", self.original_video2, self.original_button2),
+            ],
+            alignment=MainAxisAlignment.CENTER,
+            vertical_alignment=CrossAxisAlignment.START,
+            spacing=50,
+            visible=False
+        )
+
+    def create_video_container(self, title, video, control_button, width=400):
+        return Container(
+            width=width,
+            visible=True,  # Will be controlled by handle_dropdown_change
+            content=Column(
+                [
+                    Text(title, style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
+                    Container(
+                        alignment=alignment.center,
+                        border_radius=border_radius.all(20),
+                        bgcolor=colors.BLACK,
+                        width=width,
+                        height=225,  # Adjusted height to maintain aspect ratio
+                        content=video
+                    ),
+                    Container(
+                        width=width,
+                        content=control_button
+                    )
+                ],
+                spacing=16,
+                horizontal_alignment=CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def build(self):
+        self.video_container1 = self.create_video_container(
+            "Deteksi", 
+            self.result_video, 
+            self.detection_button
+        )
+        self.video_container2 = self.create_video_container(
+            "Video Original", 
+            self.original_video, 
+            self.original_button
+        )
+        self.video_container3 = self.create_video_container(
+            "Deteksi 2", 
+            self.result_video2, 
+            self.detection_button2,
+            width=300
+        )
+        self.video_container4 = self.create_video_container(
+            "Video Original 2", 
+            self.original_video2, 
+            self.original_button2,
+            width=300
+        )
+        
+        # Store containers as instance variables for easy access
+        self.video_containers = [
+            self.video_container1,
+            self.video_container2,
+            self.video_container3,
+            self.video_container4
+        ]
+
+        # Initially hide second set of videos completely
+        self.video_container3.visible = False
+        self.video_container4.visible = False
+        
+        all_videos_row = Row(
+            self.video_containers,
+            alignment=MainAxisAlignment.CENTER,
+            vertical_alignment=CrossAxisAlignment.START,
+            spacing=20,
+        )
+
+        controls_row = Container(
+            content=Column(
+                [
+                    Container(
+                        content=Column(
+                            [
+                                Text(
+                                    'Choose what you want to detect',
+                                    style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16),
+                                    text_align=TextAlign.CENTER,
+                                ),
+                                self.feature_picker,
+                                OutlinedButton(
+                                    'Export Data',
+                                    on_click=lambda e: export_data.export_to_excel(wb, image_folder, frame_processed),
+                                    width=500,
+                                    style=ButtonStyle(
+                                        color=colors.BLACK,
+                                        padding=padding.symmetric(vertical=20)
+                                    )
+                                ),
+                            ],
+                            spacing=10,
+                            horizontal_alignment=CrossAxisAlignment.CENTER,
+                        ),
+                        padding=padding.symmetric(vertical=20),
+                    ),
+                ],
+                horizontal_alignment=CrossAxisAlignment.CENTER,
+            ),
+            alignment=alignment.center,
+        )
+
+        return Container(
+            bgcolor=colors.WHITE,
+            content=Column(
+                [
+                    Container(
+                        alignment=alignment.center,
+                        margin=margin.only(bottom=16),
+                        content=Column(
+                            [
+                                Image(src='images/pertamina.png', width=100),
+                                Text(
+                                    'A I LOPE U',
+                                    style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
+                                ),
+                            ],
+                            horizontal_alignment=CrossAxisAlignment.CENTER,
+                            alignment=MainAxisAlignment.CENTER,
+                        )
+                    ),
+                    all_videos_row,
+                    controls_row,
+                    self.system_monitor,
+                ],
+                horizontal_alignment=CrossAxisAlignment.CENTER,
+                alignment=MainAxisAlignment.CENTER,
+                spacing=20,
+            ),
+            padding=padding.all(10),
+            expand=True,
+            alignment=alignment.center,
+        )
+
     def handle_dropdown_change(self, e):
-        # Stop detection if running
+        # Stop all videos if running
         if self.is_detection_running:
             self.stop_detection()
-            
-        # Stop original stream if running
+        if self.is_detection2_running:
+            self.stop_detection2()
         if self.is_original_running:
             self.stop_original()
-            
+        if self.is_original2_running:
+            self.stop_original2()
+
+        is_safety_equipment = e.data == "Safety Equipment Detection"
+        
+        if is_safety_equipment:
+            # Show all 4 videos with smaller width
+            self.video_container1.width = 300
+            self.video_container2.width = 300
+            self.video_container3.visible = True
+            self.video_container4.visible = True
+            self.result_video.width = 300
+            self.original_video.width = 300
+            self.result_video2.width = 300
+            self.original_video2.width = 300
+        else:
+            # Show only 2 videos with larger width
+            self.video_container1.width = 400
+            self.video_container2.width = 400
+            self.video_container3.visible = False
+            self.video_container4.visible = False
+            self.result_video.width = 400
+            self.original_video.width = 400
+        
+        # Update video and button visibility
+        self.result_video2.visible = is_safety_equipment
+        self.original_video2.visible = is_safety_equipment
+        self.detection_button2.visible = is_safety_equipment
+        self.original_button2.visible = is_safety_equipment
+        
         self.page.update()
 
     def stop_detection(self):
@@ -317,6 +536,24 @@ class MainView(View):
         self.is_detection_running = False
         self.detection_button.update()
 
+    def stop_detection2(self):
+        global detection_thread2, cam_stream2
+        if cam_stream2:
+            cam_stream2.stop()
+        
+        self.detection_button2.text = "Start Detection 2"
+        self.detection_button2.style.bgcolor = colors.GREEN
+        
+        if detection_thread2 is not None:
+            detection_thread2.join()
+            detection_thread2 = None
+        
+        self.result_video2.src_base64 = None
+        self.result_video2.src = 'images/black.png'
+        self.result_video2.update()
+        self.is_detection2_running = False
+        self.detection_button2.update()
+
     def stop_original(self):
         if hasattr(self, 'original_stream'):
             self.original_stream.stop()
@@ -328,68 +565,16 @@ class MainView(View):
         self.is_original_running = False
         self.original_button.update()
 
-    def create_video_container(self, title, video, control_button):
-        return Container(
-            width=400,
-            content=Column(
-                [
-                    Text(title, style=TextStyle(weight=FontWeight.W_600, color=colors.BLACK, size=16)),
-                    Container(
-                        alignment=alignment.center,
-                        border_radius=border_radius.all(20),
-                        bgcolor=colors.BLACK,
-                        width=400,
-                        height=300,
-                        content=video
-                    ),
-                    Container(
-                        width=400,
-                        content=control_button
-                    )
-                ],
-                spacing=16
-            ),
-        )
-
-    def build(self):
-        return Container(
-            bgcolor=colors.WHITE,
-            content=Column(
-                [
-                    Container(
-                        alignment=alignment.center,
-                        margin=margin.only(bottom=16),
-                        content=Column(
-                            [
-                                Image(src='images/pertamina.png', width=100),
-                                Text(
-                                    'A I LOPE U',
-                                    style=TextStyle(weight=FontWeight.W_800, color=colors.BLACK, size=50)
-                                ),
-                            ],
-                            horizontal_alignment=CrossAxisAlignment.CENTER,
-                            alignment=MainAxisAlignment.CENTER,
-                        )
-                    ),
-                    Row(
-                        [
-                            self.create_video_container("Deteksi", self.result_video, self.detection_button),
-                            self.create_video_container("Video Original", self.original_video, self.original_button),
-                            self.create_control_container(),
-                        ],
-                        alignment=MainAxisAlignment.CENTER,
-                        vertical_alignment=CrossAxisAlignment.START,
-                        spacing=50,
-                    ),
-                    self.system_monitor,
-                ],
-                horizontal_alignment=CrossAxisAlignment.CENTER,
-                alignment=MainAxisAlignment.CENTER,
-            ),
-            padding=padding.all(10),
-            expand=True,
-            alignment=alignment.center,
-        )
+    def stop_original2(self):
+        if hasattr(self, 'original_stream2'):
+            self.original_stream2.stop()
+        self.original_button2.text = "Start Original 2"
+        self.original_button2.style.bgcolor = colors.GREEN
+        self.original_video2.src = 'images/black.png'
+        self.original_video2.src_base64 = None
+        self.original_video2.update()
+        self.is_original2_running = False
+        self.original_button2.update()
 
     def create_control_container(self):
         return Container(
@@ -415,7 +600,7 @@ class MainView(View):
                 ],
             )
         )
-
+    
     def toggle_detection(self, e):
         global detection_thread, cam_stream, model, ser
         if self.is_detection_running:
@@ -446,6 +631,28 @@ class MainView(View):
             self.is_detection_running = True
             self.detection_button.update()
 
+    def toggle_detection2(self, e):
+        global detection_thread2, cam_stream2, model2
+        if self.is_detection2_running:
+            self.stop_detection2()
+        else:
+            # Start new detection (always Safety Equipment)
+            model2 = YOLO('models/yolo11n.pt')
+            cam_stream2 = CamStream(video_path.video_path_safety_equipment2)  # New video path
+
+            cam_stream2.start()
+            self.detection_button2.text = "Stop Detection 2"
+            self.detection_button2.style.bgcolor = colors.RED
+            self.page.update()
+
+            detection_thread2 = Thread(
+                target=asyncio.run,
+                args=(start_detection(cam_stream2, model2, self.result_video2, self.feature_picker.value),)
+            )
+            detection_thread2.start()
+            self.is_detection2_running = True
+            self.detection_button2.update()
+
     def toggle_original(self, e):
         if self.is_original_running:
             self.stop_original()
@@ -473,6 +680,29 @@ class MainView(View):
             Thread(target=asyncio.run, args=(update_original(),)).start()
             self.is_original_running = True
             self.original_button.update()
+
+    def toggle_original2(self, e):
+        if self.is_original2_running:
+            self.stop_original2()
+        else:
+            # Always use second safety equipment video path
+            video_path_selected = video_path.video_path_safety_equipment2  # New video path
+            
+            self.original_stream2 = OriginalStream(video_path_selected)
+            self.original_stream2.start()
+            self.original_button2.text = "Stop Original 2"
+            self.original_button2.style.bgcolor = colors.RED
+            
+            async def update_original2():
+                while not self.original_stream2.stopped:
+                    frame = self.original_stream2.read()
+                    self.original_video2.src_base64 = save_frame(frame)
+                    self.original_video2.update()
+                    await asyncio.sleep(0.001)
+
+            Thread(target=asyncio.run, args=(update_original2(),)).start()
+            self.is_original2_running = True
+            self.original_button2.update()
 
 def main(page: Page):
     page.title = 'A I LOPE U'
